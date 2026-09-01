@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+build/
+dist/
+*.spec
+test_*.pdf
+*.log
+.idea/
+.vscode/
+
+# Retained locally only as a reference to the retired Tkinter interface.
+app.py
