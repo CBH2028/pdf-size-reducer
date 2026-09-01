@@ -95,17 +95,7 @@ py -3 -m venv .venv
 
 ## 工作原理
 
-```mermaid
-flowchart LR
-    A[读取 PDF 结构] --> B[按图注识别完整 Figure]
-    B --> C[用户预览并选择]
-    C --> D[无损结构优化]
-    D --> E{达到目标?}
-    E -- 是 --> F[输出 PDF]
-    E -- 否 --> G[搜索分辨率与 JPEG 质量]
-    G --> H[逐 Figure 微调体积]
-    H --> F
-```
+![PDF Size Reducer 工作原理](docs/images/workflow-zh-CN.svg)
 
 - 首先尝试无损结构优化；若已经达到目标，不改动图像质量。
 - 独立位图会按候选分辨率和 JPEG 质量重新编码。

@@ -102,17 +102,7 @@ The source PDF is never overwritten. If the selected output path already exists,
 
 ## How it works
 
-```mermaid
-flowchart LR
-    A[Read PDF structure] --> B[Discover complete Figures]
-    B --> C[Preview and select]
-    C --> D[Lossless optimization]
-    D --> E{Target reached?}
-    E -- Yes --> F[Write output PDF]
-    E -- No --> G[Search resolution and JPEG quality]
-    G --> H[Fine-tune individual Figures]
-    H --> F
-```
+![How PDF Size Reducer works](docs/images/workflow-en.svg)
 
 - Lossless structural optimization runs first. If it is enough, image quality is not changed.
 - Standalone bitmaps are re-encoded across candidate resolutions and JPEG quality levels.

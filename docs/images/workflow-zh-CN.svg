@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640" viewBox="0 0 1600 640" role="img" aria-labelledby="title desc">
+  <title id="title">PDF Size Reducer 工作原理</title>
+  <desc id="desc">最小损失工作流。软件理解 PDF 结构，由用户选择图形，优化勾选内容，保留未勾选内容，并输出接近目标体积的 PDF。</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FBFBFE"/>
+      <stop offset="0.52" stop-color="#F5F5FA"/>
+      <stop offset="1" stop-color="#EEF2FA"/>
+    </linearGradient>
+    <linearGradient id="purple" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8583FF"/><stop offset="1" stop-color="#5E5CE6"/></linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#68D391"/><stop offset="1" stop-color="#248A3D"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="10" stdDeviation="15" flood-color="#24233D" flood-opacity="0.10"/></filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="34"/></filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="8" refY="5.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,5.5 L0,11 Z" fill="#7775E7"/></marker>
+    <marker id="arrowMuted" markerWidth="11" markerHeight="11" refX="8" refY="5.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,5.5 L0,11 Z" fill="#A7A7B3"/></marker>
+    <style>
+      .font { font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; }
+      .card { fill: #FFFFFF; stroke: #E6E6EE; stroke-width: 2; }
+      .title { fill: #1D1D1F; font-size: 25px; font-weight: 700; }
+      .body { fill: #6E6E73; font-size: 16px; font-weight: 500; }
+      .eyebrow { fill: #5E5CE6; font-size: 13px; font-weight: 750; letter-spacing: 1px; }
+      .route { fill: none; stroke: #7775E7; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .route-muted { fill: none; stroke: #A7A7B3; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+      .route-label { fill: #5E5CE6; font-size: 13px; font-weight: 700; }
+      .route-label-muted { fill: #7C7C85; font-size: 13px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect x="20" y="20" width="1560" height="600" rx="42" fill="url(#canvas)" stroke="#E7E7EF" stroke-width="2"/>
+  <circle cx="180" cy="85" r="92" fill="#B8B6FF" opacity="0.16" filter="url(#soft)"/>
+  <circle cx="1430" cy="540" r="110" fill="#72D8FF" opacity="0.15" filter="url(#soft)"/>
+
+  <g class="font">
+    <g transform="translate(70 62)">
+      <rect width="172" height="34" rx="17" fill="#ECEBFF"/>
+      <circle cx="19" cy="17" r="5" fill="#5E5CE6"/>
+      <text x="34" y="22" class="eyebrow">智能定容流程</text>
+    </g>
+    <text x="1530" y="83" text-anchor="end" class="body" font-size="15">只改变勾选内容 · 其余内容保持原样</text>
+
+    <g filter="url(#shadow)"><rect x="70" y="177" width="190" height="224" rx="28" class="card"/></g>
+    <g transform="translate(129 213)">
+      <rect width="72" height="86" rx="17" fill="url(#purple)"/>
+      <path d="M20 23h32M20 36h32M20 49h24" stroke="#FFF" stroke-width="4" stroke-linecap="round" opacity="0.93"/>
+      <rect x="20" y="61" width="20" height="8" rx="4" fill="#FFF" opacity="0.55"/>
+    </g>
+    <text x="165" y="336" text-anchor="middle" class="title">导入 PDF</text>
+    <text x="165" y="366" text-anchor="middle" class="body">原文件始终安全</text>
+
+    <g filter="url(#shadow)"><rect x="320" y="153" width="250" height="272" rx="30" class="card"/></g>
+    <g transform="translate(408 188)">
+      <rect width="74" height="74" rx="22" fill="#EDF7FF"/>
+      <circle cx="31" cy="31" r="16" fill="none" stroke="#3478F6" stroke-width="5"/>
+      <path d="M43 43l15 15" stroke="#3478F6" stroke-width="6" stroke-linecap="round"/>
+      <path d="M24 31h14M31 24v14" stroke="#70B5FF" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <text x="445" y="304" text-anchor="middle" class="eyebrow">01 · 理解结构</text>
+    <text x="445" y="340" text-anchor="middle" class="title">读取原生 PDF</text>
+    <text x="445" y="372" text-anchor="middle" class="body">文字 · 位图 · 矢量图</text>
+    <text x="445" y="397" text-anchor="middle" class="body">组合完整 Figure</text>
+
+    <g filter="url(#shadow)"><rect x="635" y="153" width="250" height="272" rx="30" class="card"/></g>
+    <g transform="translate(723 188)">
+      <rect width="74" height="74" rx="22" fill="#F0EFFF"/>
+      <rect x="14" y="16" width="20" height="18" rx="5" fill="#8583FF"/><rect x="40" y="16" width="20" height="18" rx="5" fill="#C4C2FF"/>
+      <rect x="14" y="40" width="20" height="18" rx="5" fill="#C4C2FF"/><rect x="40" y="40" width="20" height="18" rx="5" fill="#5E5CE6"/>
+      <path d="M45 49l4 4 8-10" fill="none" stroke="#FFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="760" y="304" text-anchor="middle" class="eyebrow">02 · 预览选择</text>
+    <text x="760" y="340" text-anchor="middle" class="title">查看完整 Figure</text>
+    <text x="760" y="372" text-anchor="middle" class="body">只勾选允许缩减的内容</text>
+    <text x="760" y="397" text-anchor="middle" class="body">同时显示估算占用</text>
+
+    <g filter="url(#shadow)"><rect x="965" y="139" width="300" height="300" rx="32" class="card"/></g>
+    <g transform="translate(1078 170)">
+      <rect width="74" height="74" rx="22" fill="#FFF2E8"/>
+      <path d="M18 23h38M18 37h38M18 51h38" stroke="#FF8A5C" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="31" cy="23" r="7" fill="#FFF" stroke="#FF7A59" stroke-width="4"/><circle cx="46" cy="37" r="7" fill="#FFF" stroke="#FF7A59" stroke-width="4"/><circle cx="27" cy="51" r="7" fill="#FFF" stroke="#FF7A59" stroke-width="4"/>
+    </g>
+    <text x="1115" y="286" text-anchor="middle" class="eyebrow" fill="#E56745">03 · 最小损失</text>
+    <text x="1115" y="322" text-anchor="middle" class="title">无损优化优先</text>
+    <rect x="1002" y="345" width="226" height="35" rx="17.5" fill="#F1F8F3"/>
+    <circle cx="1022" cy="362.5" r="6" fill="#34A853"/>
+    <text x="1037" y="368" class="body" fill="#28763D" font-size="14">足够小时不降低清晰度</text>
+    <text x="1115" y="408" text-anchor="middle" class="body">必要时：DPI · JPEG · 单图微调</text>
+
+    <g filter="url(#shadow)"><rect x="1330" y="177" width="200" height="224" rx="28" class="card"/></g>
+    <g transform="translate(1394 212)">
+      <circle cx="36" cy="36" r="36" fill="url(#green)"/>
+      <path d="M20 36l11 11 22-25" fill="none" stroke="#FFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="1430" y="331" text-anchor="middle" class="title">输出 PDF</text>
+    <text x="1430" y="361" text-anchor="middle" class="body">尽量贴近目标体积</text>
+    <text x="1430" y="386" text-anchor="middle" class="body">原生正文保持清晰</text>
+
+    <g filter="url(#shadow)"><rect x="930" y="486" width="365" height="91" rx="24" fill="#FFFFFF" stroke="#DEDEE7" stroke-width="2"/></g>
+    <g transform="translate(956 509)">
+      <rect width="46" height="46" rx="14" fill="#F1F1F5"/>
+      <path d="M14 23h18M23 14v18" stroke="#8E8E93" stroke-width="3.5" stroke-linecap="round"/>
+    </g>
+    <text x="1020" y="523" class="eyebrow" fill="#777780">保持原样</text>
+    <text x="1020" y="551" class="title" font-size="20">未勾选 Figure 不做修改</text>
+
+    <path d="M260 289H305" class="route" marker-end="url(#arrow)"/>
+    <path d="M570 289H620" class="route" marker-end="url(#arrow)"/>
+    <path d="M885 270H950" class="route" marker-end="url(#arrow)"/>
+    <text x="917" y="251" text-anchor="middle" class="route-label">已勾选</text>
+    <path d="M1265 289H1315" class="route" marker-end="url(#arrow)"/>
+    <path d="M760 425V531H915" class="route-muted" marker-end="url(#arrowMuted)"/>
+    <text x="777" y="474" class="route-label-muted">未勾选</text>
+    <path d="M1295 531H1430V416" class="route-muted" marker-end="url(#arrowMuted)"/>
+  </g>
+</svg>
