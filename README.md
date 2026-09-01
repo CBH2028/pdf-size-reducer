@@ -8,7 +8,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-14%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-15%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -18,6 +18,18 @@
 </div>
 
 ![PDF Size Reducer 加载界面](docs/images/app-loading.png)
+
+## 操作演示
+
+<div align="center">
+
+[![PDF Size Reducer 操作演示](docs/media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4)
+
+**真实加载 97.92 MiB / 48 页 PDF：后台读取 → Figure 全景预览 → 放大检查 → 排除部分图形 → 精确输入目标 → 输出完成**
+
+[下载高清 MP4](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4) · [下载演示 PDF](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Stress_Demo_97.92MB.pdf) · [查看演示与压力测试说明](docs/DEMO.md)
+
+</div>
 
 ## 为什么做这个工具
 
@@ -34,8 +46,8 @@
 | 可视化选择 | 主界面直接显示双列全景缩略图、类型和估算占用；点击即可打开约 240 DPI 高清预览并平滑缩放。 |
 | 清晰度优先 | 采用接近 PowerPoint 导出的高分辨率、适度 JPEG 压缩策略，优先保护小字符和细线。 |
 | 透明背景安全 | Figure 替代图统一使用无 Alpha、无软蒙版的白底 RGB JPEG，避免部分阅读器出现黑色背景。 |
-| Apple 风格界面 | Qt 6 圆角卡片、柔和阴影、缩略图淡入、高 DPI 适配，以及带呼吸光和动态文案的真实逐页加载进度。 |
-| 始终可响应 | Figure 扫描、缩略图、高清预览和压缩均在后台线程执行，大型科研图表不会锁死主窗口。 |
+| Apple 风格界面 | Qt 6 圆角卡片、柔和阴影、缩略图淡入、高 DPI 适配，以及读取和高清预览阶段带呼吸光与动态文案的真实加载反馈。 |
+| 始终可响应 | Figure 扫描与缩略图渲染使用隔离子进程，高清预览和压缩使用后台任务；大型科研图表不会锁死主窗口，并可随时停止读取。 |
 
 ## 快速开始
 
@@ -94,6 +106,16 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
 ```
 
+运行可重复的大文件界面压力测试：
+
+```powershell
+.\.venv\Scripts\python.exe .\tools\stress_test.py `
+    --pages 48 --image-width 1600 --image-height 1000 `
+    --vector-paths 90 --timeout 300
+```
+
+该命令会临时生成约 98 MB 的合成科研 PDF，监测 Qt 事件循环、扫描、缩略图和内存指标，结束后自动删除测试文件。也可以用 `--pdf "D:\path\large.pdf"` 测试已有文件，或用 `--cancel-after-ms 500` 验证安全取消。
+
 生成单文件 Windows 程序：
 
 ```powershell
@@ -109,6 +131,9 @@ pdf-size-reducer/
 ├── qt_app.py              # Qt 6 桌面界面与后台任务
 ├── compressor.py          # Figure 识别、渲染与精确定容引擎
 ├── tests/                 # 压缩与内容保真回归测试
+├── tools/stress_test.py   # 大型 PDF 生成与界面响应压力测试
+├── tools/record_demo.py   # 驱动真实界面并安全录制操作演示
+├── docs/media/            # README 动图与高清操作视频
 ├── start_pdf_tool.bat     # 一键启动脚本
 ├── build_exe.bat          # PyInstaller 构建脚本
 └── CHANGELOG.md           # 完整修改日志

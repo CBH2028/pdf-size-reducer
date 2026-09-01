@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import stat
+import threading
 from pathlib import Path
 
 import pymupdf as fitz
@@ -265,6 +266,16 @@ def test_assets_can_be_listed_and_previewed(tmp_path: Path) -> None:
         thumbnail = compressor.render_asset_thumbnail(source, asset)
         with Image.open(io.BytesIO(thumbnail)) as image:
             assert image.size == (210, 145)
+
+
+def test_asset_scan_can_be_cancelled(tmp_path: Path) -> None:
+    source = tmp_path / "cancel-assets.pdf"
+    make_image_pdf(source, pages=2)
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(compressor.CompressionCancelled):
+        compressor.list_pdf_assets(source, cancel_event=cancel_event)
 
 
 def test_figure_storage_accounts_for_form_xobjects(tmp_path: Path) -> None:

@@ -484,10 +484,12 @@ def _drawing_storage_weight(drawing: dict[str, object]) -> int:
 def _detect_figure_assets(
     document: fitz.Document,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> list[PDFAsset]:
     """Detect complete paper Figures, using captions as semantic anchors."""
     assets: list[PDFAsset] = []
     for page_number in range(document.page_count):
+        _check_cancel(cancel_event)
         page = document[page_number]
         captions = _page_caption_lines(page)
         if not captions:
@@ -614,8 +616,10 @@ def _rect_center_is_inside(inner: fitz.Rect, outer: fitz.Rect) -> bool:
 def list_pdf_assets(
     input_path: str | Path,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[PDFAsset], int]:
     """List complete paper Figures plus any ungrouped graphic objects."""
+    _check_cancel(cancel_event)
     _notify(progress_callback, 2, "正在验证 PDF 并读取目录…")
     with fitz.open(Path(input_path)) as document:
         _notify(
@@ -623,7 +627,9 @@ def list_pdf_assets(
             6,
             f"已打开 PDF，共 {document.page_count} 页",
         )
-        figure_assets = _detect_figure_assets(document, progress_callback)
+        figure_assets = _detect_figure_assets(
+            document, progress_callback, cancel_event
+        )
         figures_by_page: dict[int, list[fitz.Rect]] = {}
         for asset in figure_assets:
             if asset.rect is not None:
@@ -636,6 +642,7 @@ def list_pdf_assets(
         # and ensuring that deselecting the Figure really preserves it.
         figure_image_xrefs: set[int] = set()
         for page_number, figure_rectangles in figures_by_page.items():
+            _check_cancel(cancel_event)
             for info in document[page_number].get_image_info(xrefs=True):
                 xref = int(info.get("xref", 0))
                 image_rect = fitz.Rect(info["bbox"])
@@ -649,6 +656,7 @@ def list_pdf_assets(
 
         image_data: dict[int, dict[str, object]] = {}
         for page_number in range(document.page_count):
+            _check_cancel(cancel_event)
             for image in document[page_number].get_images(full=True):
                 xref = int(image[0])
                 if xref <= 0 or xref in figure_image_xrefs:
@@ -676,6 +684,7 @@ def list_pdf_assets(
         assets = list(figure_assets)
         image_items = list(image_data.items())
         for item_index, (xref, data) in enumerate(image_items):
+            _check_cancel(cancel_event)
             assets.append(
                 PDFAsset(
                     key=f"image:{xref}",
@@ -977,16 +986,66 @@ def render_asset_thumbnail(
     asset: PDFAsset,
     size: tuple[int, int] = (210, 145),
 ) -> bytes:
-    """Render a complete, aspect-fitted overview for one selectable asset."""
-    preview_dpi = 120
-    if asset.kind == "figure" and asset.rect is not None:
-        rectangle = fitz.Rect(asset.rect)
-        if rectangle.width > 0 and rectangle.height > 0:
-            fit_scale = min(size[0] / rectangle.width, size[1] / rectangle.height)
-            preview_dpi = max(110, min(190, round(fit_scale * 72)))
-    preview = Image.open(
-        BytesIO(render_asset_image(input_path, asset, dpi=preview_dpi))
-    ).convert("RGB")
+    """Render a fast, aspect-fitted overview for one selectable asset.
+
+    The main-grid preview is deliberately decoded directly from MuPDF pixels.
+    Routing it through ``render_asset_image`` used to encode a large PNG only
+    to decode and shrink it immediately, causing visible event-loop stalls on
+    PDFs with dozens of Figures.
+    """
+    with fitz.open(Path(input_path)) as document:
+        if asset.kind == "image":
+            if asset.xref is None:
+                raise CompressionError("图片对象缺少 xref。")
+            pixmap = _image_pixmap(document, asset.xref, asset.smask)
+            if pixmap.alpha and pixmap.n == 4:
+                foreground = Image.frombytes(
+                    "RGBA", (pixmap.width, pixmap.height), pixmap.samples
+                )
+                white = Image.new("RGBA", foreground.size, "white")
+                preview = Image.alpha_composite(white, foreground).convert("RGB")
+            elif pixmap.alpha and pixmap.n == 2:
+                foreground = Image.frombytes(
+                    "LA", (pixmap.width, pixmap.height), pixmap.samples
+                ).convert("RGBA")
+                white = Image.new("RGBA", foreground.size, "white")
+                preview = Image.alpha_composite(white, foreground).convert("RGB")
+            elif pixmap.n == 1:
+                preview = Image.frombytes(
+                    "L", (pixmap.width, pixmap.height), pixmap.samples
+                ).convert("RGB")
+            else:
+                preview = Image.frombytes(
+                    "RGB", (pixmap.width, pixmap.height), pixmap.samples
+                )
+        elif asset.kind == "figure":
+            if asset.rect is None:
+                raise CompressionError("论文 Figure 缺少识别区域。")
+            page = document[asset.page_numbers[0]]
+            clip = fitz.Rect(asset.rect) & page.rect
+            if clip.is_empty:
+                raise CompressionError("论文 Figure 的识别区域无效。")
+            fit_scale = min(size[0] / clip.width, size[1] / clip.height)
+            # One native PDF pixel per point is already around 2.5x the card
+            # resolution for a typical paper Figure and gives clean downsampling.
+            scale = max(1.0, min(1.7, fit_scale * 1.35))
+            pixmap = page.get_pixmap(
+                matrix=fitz.Matrix(scale, scale),
+                clip=clip,
+                colorspace=fitz.csRGB,
+                alpha=False,
+                annots=False,
+            )
+            preview = Image.frombytes(
+                "RGB", (pixmap.width, pixmap.height), pixmap.samples
+            )
+        else:
+            rendered = _render_vector_layer(
+                document, asset.page_numbers[0], dpi=90, jpeg_quality=88
+            )
+            if rendered is None:
+                raise CompressionError("此矢量绘图层没有可预览内容。")
+            preview = Image.open(BytesIO(rendered[0])).convert("RGB")
 
     preview.thumbnail(size, Image.Resampling.LANCZOS)
     canvas = Image.new("RGB", size, "white")
@@ -994,7 +1053,13 @@ def render_asset_thumbnail(
     y = (size[1] - preview.height) // 2
     canvas.paste(preview, (x, y))
     buffer = BytesIO()
-    canvas.save(buffer, format="PNG", optimize=True)
+    canvas.save(
+        buffer,
+        format="JPEG",
+        quality=88,
+        subsampling=1,
+        optimize=False,
+    )
     return buffer.getvalue()
 
 

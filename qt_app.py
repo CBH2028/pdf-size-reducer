@@ -7,6 +7,9 @@ import re
 import sys
 import threading
 import math
+import multiprocessing
+import queue
+import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -82,7 +85,7 @@ from compressor import (
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 ACCENT = "#5E5CE6"
 ACCENT_HOVER = "#4F46D5"
 TEXT = "#1D1D1F"
@@ -314,6 +317,31 @@ QLabel#readingTip {{
     color: {MUTED};
     font-size: 10px;
 }}
+QLabel#readingMeta {{
+    color: {SUCCESS};
+    background: #EEF8F0;
+    border-radius: 9px;
+    padding: 6px 10px;
+    font-size: 9px;
+    font-weight: 650;
+}}
+QPushButton#scanCancelButton {{
+    min-height: 31px;
+    color: {MUTED};
+    background: rgba(255, 255, 255, 185);
+    border: 1px solid #DDDBF5;
+    border-radius: 10px;
+    padding: 0 16px;
+}}
+QPushButton#scanCancelButton:hover {{
+    color: {ERROR};
+    background: #FFF3F4;
+    border-color: #F1C5CA;
+}}
+QPushButton#scanCancelButton:disabled {{
+    color: #AEAEB2;
+    background: #F4F4F7;
+}}
 QProgressBar#readingProgress {{
     height: 8px;
     border: none;
@@ -478,6 +506,8 @@ class WarmLoadingOrb(QWidget):
 class ReadingPanel(QWidget):
     """Friendly, truthful progress feedback while a PDF is being inspected."""
 
+    cancel_requested = Signal()
+
     _TIPS = (
         "我在分辨文字、位图和矢量线条，页面本身不会被改动。",
         "正在把分散的图形对象重新理解为完整 Figure。",
@@ -490,6 +520,8 @@ class ReadingPanel(QWidget):
         self.setMinimumHeight(470)
         self._tip_index = 0
         self._tip_animation: QPropertyAnimation | None = None
+        self._elapsed_clock = QElapsedTimer()
+        self._elapsed_clock.start()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(36, 30, 36, 30)
@@ -540,12 +572,31 @@ class ReadingPanel(QWidget):
         self.tip.setGraphicsEffect(self._tip_opacity)
         content.addWidget(self.tip)
 
+        self.meta = QLabel("已用 0.0 秒  ·  界面响应正常")
+        self.meta.setObjectName("readingMeta")
+        self.meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        content.addWidget(self.meta, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.cancel_button = QPushButton("停止读取")
+        self.cancel_button.setObjectName("scanCancelButton")
+        self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_button.clicked.connect(
+            lambda _checked=False: self.cancel_requested.emit()
+        )
+        content.addWidget(
+            self.cancel_button, 0, Qt.AlignmentFlag.AlignHCenter
+        )
+
         outer.addWidget(glass, 0, Qt.AlignmentFlag.AlignHCenter)
         outer.addStretch(1)
         self._tip_timer = QTimer(self)
         self._tip_timer.setInterval(2600)
         self._tip_timer.timeout.connect(self._change_tip)
         self._tip_timer.start()
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(200)
+        self._elapsed_timer.timeout.connect(self._update_elapsed)
+        self._elapsed_timer.start()
 
     def update_progress(self, value: int, message: str) -> None:
         value = max(self.progress.value(), max(0, min(100, value)))
@@ -557,13 +608,34 @@ class ReadingPanel(QWidget):
         self.progress.set_smooth_value(100)
         self.eyebrow.setText("分析完成 · 100%")
         self.stage.setText(f"找到了 {asset_count} 个可预览图形，正在为你铺开…")
+        self.meta.setText(
+            f"读取用时 {self._elapsed_seconds():.1f} 秒  ·  即将显示预览"
+        )
+        self.cancel_button.setText("读取完成")
+        self.cancel_button.setEnabled(False)
         self._tip_timer.stop()
+        self._elapsed_timer.stop()
+
+    def mark_cancelling(self) -> None:
+        self.stage.setText("正在停在一个安全的位置…")
+        self.meta.setText("取消请求已收到  ·  不会生成或修改文件")
+        self.cancel_button.setText("正在停止…")
+        self.cancel_button.setEnabled(False)
 
     def stop(self) -> None:
         self.orb.stop()
         self._tip_timer.stop()
+        self._elapsed_timer.stop()
         if self._tip_animation:
             self._tip_animation.stop()
+
+    def _elapsed_seconds(self) -> float:
+        return max(0, self._elapsed_clock.elapsed()) / 1000.0
+
+    def _update_elapsed(self) -> None:
+        self.meta.setText(
+            f"已用 {self._elapsed_seconds():.1f} 秒  ·  界面响应正常"
+        )
 
     def _change_tip(self) -> None:
         self._tip_animation = QPropertyAnimation(
@@ -722,31 +794,145 @@ class AssetCard(QFrame):
         self._update_preview_pixmap()
 
 
+def _asset_scan_process(
+    path: str,
+    result_queue,
+    cancel_event,
+) -> None:
+    """Inspect a PDF outside the GUI process so dense pages cannot hold its GIL."""
+    try:
+        assets, page_count = list_pdf_assets(
+            Path(path),
+            progress_callback=lambda value, message: result_queue.put(
+                ("progress", value, message)
+            ),
+            cancel_event=cancel_event,
+        )
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        result_queue.put(("completed", assets, page_count))
+
+
 class AssetScanWorker(QObject):
     progress = Signal(int, int, str)
     completed = Signal(int, object, object, int)
     failed = Signal(int, object, str)
+    cancelled = Signal(int, object)
 
     def __init__(self, path: Path, generation: int) -> None:
         super().__init__()
         self.path = path
         self.generation = generation
+        self.cancel_event = threading.Event()
+        self._process_cancel_event = None
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+        if self._process_cancel_event is not None:
+            self._process_cancel_event.set()
 
     @Slot()
     def run(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        result_queue = context.Queue()
+        process_cancel_event = context.Event()
+        self._process_cancel_event = process_cancel_event
+        process = context.Process(
+            target=_asset_scan_process,
+            args=(str(self.path), result_queue, process_cancel_event),
+            name="PDFAssetScanner",
+            daemon=True,
+        )
+        process.start()
+        terminal_received = False
+        cancel_started: float | None = None
+        process_exited_at: float | None = None
         try:
-            assets, page_count = list_pdf_assets(
-                self.path,
-                progress_callback=lambda value, message: self.progress.emit(
-                    self.generation, value, message
-                ),
+            while not terminal_received:
+                if self.cancel_event.is_set():
+                    process_cancel_event.set()
+                    if cancel_started is None:
+                        cancel_started = time.monotonic()
+                    elif process.is_alive() and time.monotonic() - cancel_started > 1:
+                        process.terminate()
+                        self.cancelled.emit(self.generation, self.path)
+                        terminal_received = True
+                        break
+                try:
+                    message = result_queue.get(timeout=0.05)
+                except queue.Empty:
+                    if not process.is_alive():
+                        if process_exited_at is None:
+                            process_exited_at = time.monotonic()
+                        elif time.monotonic() - process_exited_at > 0.5:
+                            if self.cancel_event.is_set():
+                                self.cancelled.emit(self.generation, self.path)
+                            else:
+                                self.failed.emit(
+                                    self.generation,
+                                    self.path,
+                                    "PDF 扫描进程意外结束。",
+                                )
+                            terminal_received = True
+                    else:
+                        process_exited_at = None
+                    continue
+
+                kind, *payload = message
+                if kind == "progress":
+                    value, text = payload
+                    self.progress.emit(self.generation, int(value), str(text))
+                elif kind == "completed":
+                    assets, page_count = payload
+                    self.completed.emit(
+                        self.generation,
+                        self.path,
+                        assets,
+                        int(page_count),
+                    )
+                    terminal_received = True
+                elif kind == "cancelled":
+                    self.cancelled.emit(self.generation, self.path)
+                    terminal_received = True
+                elif kind == "failed":
+                    self.failed.emit(
+                        self.generation, self.path, str(payload[0])
+                    )
+                    terminal_received = True
+        finally:
+            process_cancel_event.set()
+            if process.is_alive():
+                process.join(timeout=1.0)
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=1.0)
+            result_queue.close()
+            result_queue.join_thread()
+            self._process_cancel_event = None
+
+
+def _thumbnail_process(
+    path: str,
+    assets: list[PDFAsset],
+    result_queue,
+    cancel_event,
+) -> None:
+    """Render card thumbnails outside the GUI process."""
+    for index, asset in enumerate(assets):
+        if cancel_event.is_set():
+            break
+        try:
+            data = render_asset_thumbnail(
+                Path(path), asset, size=(360, 190)
             )
         except Exception as exc:
-            self.failed.emit(self.generation, self.path, str(exc))
+            result_queue.put(("ready_error", index, str(exc)))
         else:
-            self.completed.emit(
-                self.generation, self.path, assets, page_count
-            )
+            result_queue.put(("ready", index, data))
+    result_queue.put(("done",))
 
 
 class ThumbnailWorker(QObject):
@@ -761,23 +947,82 @@ class ThumbnailWorker(QObject):
         self.assets = assets
         self.generation = generation
         self.cancel_event = threading.Event()
+        self._process_cancel_event = None
 
     def cancel(self) -> None:
         self.cancel_event.set()
+        if self._process_cancel_event is not None:
+            self._process_cancel_event.set()
 
     @Slot()
     def run(self) -> None:
-        for index, asset in enumerate(self.assets):
-            if self.cancel_event.is_set():
-                break
-            try:
-                result: bytes | Exception = render_asset_thumbnail(
-                    self.path, asset, size=(360, 190)
-                )
-            except Exception as exc:
-                result = exc
-            self.ready.emit(self.generation, index, result)
-        self.done.emit(self.generation)
+        context = multiprocessing.get_context("spawn")
+        result_queue = context.Queue()
+        process_cancel_event = context.Event()
+        self._process_cancel_event = process_cancel_event
+        process = context.Process(
+            target=_thumbnail_process,
+            args=(
+                str(self.path),
+                self.assets,
+                result_queue,
+                process_cancel_event,
+            ),
+            name="PDFThumbnailRenderer",
+            daemon=True,
+        )
+        process.start()
+        terminal_received = False
+        process_exited_at: float | None = None
+        cancel_started: float | None = None
+        try:
+            while not terminal_received:
+                if self.cancel_event.is_set():
+                    process_cancel_event.set()
+                    if cancel_started is None:
+                        cancel_started = time.monotonic()
+                    elif process.is_alive() and time.monotonic() - cancel_started > 1:
+                        process.terminate()
+                        self.done.emit(self.generation)
+                        terminal_received = True
+                        break
+                try:
+                    message = result_queue.get(timeout=0.05)
+                except queue.Empty:
+                    if not process.is_alive():
+                        if process_exited_at is None:
+                            process_exited_at = time.monotonic()
+                        elif time.monotonic() - process_exited_at > 0.5:
+                            self.done.emit(self.generation)
+                            terminal_received = True
+                    else:
+                        process_exited_at = None
+                    continue
+
+                kind, *payload = message
+                if kind == "ready":
+                    index, data = payload
+                    self.ready.emit(self.generation, int(index), data)
+                elif kind == "ready_error":
+                    index, error_message = payload
+                    self.ready.emit(
+                        self.generation,
+                        int(index),
+                        RuntimeError(str(error_message)),
+                    )
+                elif kind == "done":
+                    self.done.emit(self.generation)
+                    terminal_received = True
+        finally:
+            process_cancel_event.set()
+            if process.is_alive():
+                process.join(timeout=1.0)
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=1.0)
+            result_queue.close()
+            result_queue.join_thread()
+            self._process_cancel_event = None
 
 
 class CompressionWorker(QObject):
@@ -932,6 +1177,27 @@ class PreviewDialog(QDialog):
         self.status.setProperty("secondary", True)
         root.addWidget(self.status)
 
+        self.loading_orb = WarmLoadingOrb()
+        self.loading_card = QFrame()
+        self.loading_card.setObjectName("readingGlass")
+        self.loading_card.setFixedSize(390, 250)
+        loading_layout = QVBoxLayout(self.loading_card)
+        loading_layout.setContentsMargins(28, 18, 28, 22)
+        loading_layout.setSpacing(3)
+        loading_layout.addWidget(
+            self.loading_orb, 0, Qt.AlignmentFlag.AlignHCenter
+        )
+        loading_title = QLabel("正在冲洗高清全景")
+        loading_title.setObjectName("readingTitle")
+        loading_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_layout.addWidget(loading_title)
+        self.loading_message = QLabel("细小字符和线条会完整保留，请稍候…")
+        self.loading_message.setProperty("secondary", True)
+        self.loading_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_layout.addWidget(self.loading_message)
+        self.loading_proxy = self.scene.addWidget(self.loading_card)
+        self.scene.setSceneRect(self.loading_proxy.boundingRect())
+
         minus.clicked.connect(lambda: self._scale(1 / 1.18))
         plus.clicked.connect(lambda: self._scale(1.18))
         fit_button.clicked.connect(self._fit)
@@ -966,6 +1232,7 @@ class PreviewDialog(QDialog):
         if not pixmap.loadFromData(data):
             self._render_failed("无法读取预览图像。")
             return
+        self.loading_orb.stop()
         self.scene.clear()
         self.pixmap_item = self.scene.addPixmap(pixmap)
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
@@ -976,6 +1243,9 @@ class PreviewDialog(QDialog):
 
     @Slot(str)
     def _render_failed(self, message: str) -> None:
+        self.loading_orb.stop()
+        self.loading_message.setText("生成失败，请关闭窗口后重试。")
+        self.loading_message.setStyleSheet(f"color: {ERROR};")
         self.status.setText(f"高清预览失败：{message}")
         self.status.setStyleSheet(f"color: {ERROR};")
 
@@ -1043,6 +1313,7 @@ class MainWindow(QMainWindow):
         self.preview_dialogs: list[PreviewDialog] = []
         self._fade_animations: list[QPropertyAnimation] = []
         self.loading_panel: ReadingPanel | None = None
+        self._asset_population_generation = 0
 
         self._build_ui()
 
@@ -1303,6 +1574,7 @@ class MainWindow(QMainWindow):
         self.loading_panel = ReadingPanel(
             path.name, format_bytes(path.stat().st_size)
         )
+        self.loading_panel.cancel_requested.connect(self.cancel_scan)
         self.preview_grid.addWidget(self.loading_panel, 0, 0, 1, 2)
 
     def _clear_preview_grid(self) -> None:
@@ -1358,6 +1630,7 @@ class MainWindow(QMainWindow):
         self.assets = []
         self.selected_asset_keys.clear()
         self.file_button.setEnabled(False)
+        self.file_button.setText("读取中…")
         self.start_button.setEnabled(False)
         self.selection_info.setText("正在识别完整 Figure，请稍候…")
         self.preview_count.setText("分析中…")
@@ -1386,10 +1659,29 @@ class MainWindow(QMainWindow):
         self.scan_worker.progress.connect(self._scan_progress)
         self.scan_worker.completed.connect(self._assets_loaded)
         self.scan_worker.failed.connect(self._assets_failed)
+        self.scan_worker.cancelled.connect(self._assets_scan_cancelled)
         self.scan_worker.completed.connect(self.scan_thread.quit)
         self.scan_worker.failed.connect(self.scan_thread.quit)
+        self.scan_worker.cancelled.connect(self.scan_thread.quit)
         self.scan_thread.finished.connect(self.scan_worker.deleteLater)
+        current_thread = self.scan_thread
+        self.scan_thread.finished.connect(
+            lambda thread=current_thread: self._scan_thread_finished(thread)
+        )
         self.scan_thread.start()
+
+    def _scan_thread_finished(self, thread: QThread) -> None:
+        if self.scan_thread is thread:
+            self.scan_worker = None
+            self.scan_thread = None
+
+    def cancel_scan(self) -> None:
+        if not self.assets_loading or not self.scan_worker:
+            return
+        self.scan_worker.cancel()
+        self.status_label.setText("正在安全停止 PDF 读取…")
+        if self.loading_panel:
+            self.loading_panel.mark_cancelling()
 
     @Slot(int, int, str)
     def _scan_progress(self, generation: int, value: int, message: str) -> None:
@@ -1427,14 +1719,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         if generation != self.scan_generation or path != self.input_path:
             return
-        self.assets_loading = False
-        self.file_button.setEnabled(True)
-        self.start_button.setEnabled(True)
-        self._populate_assets(path, assets)
-        self._update_selection_info()
         self.status_label.setText(
-            f"已读完 {page_count} 页，选择图形后即可开始压缩"
+            f"已读完 {page_count} 页，正在平滑铺开 {len(assets)} 个预览…"
         )
+        self._populate_assets(path, assets, generation, page_count)
 
     @Slot(int, object, str)
     def _assets_failed(self, generation: int, path: Path, message: str) -> None:
@@ -1442,6 +1730,7 @@ class MainWindow(QMainWindow):
             return
         self.assets_loading = False
         self.file_button.setEnabled(True)
+        self.file_button.setText("选择文件")
         self.assets = []
         self.selected_asset_keys.clear()
         self.start_button.setEnabled(True)
@@ -1451,28 +1740,112 @@ class MainWindow(QMainWindow):
         self.status_label.setText("PDF 已选择，但 Figure 识别失败")
         self.progress_bar.setValue(0)
 
-    def _populate_assets(self, path: Path, assets: list[PDFAsset]) -> None:
+    @Slot(int, object)
+    def _assets_scan_cancelled(self, generation: int, path: Path) -> None:
+        if generation != self.scan_generation or path != self.input_path:
+            return
+        self.assets_loading = False
+        self.file_button.setEnabled(True)
+        self.file_button.setText("选择文件")
+        self.assets = []
+        self.selected_asset_keys.clear()
+        self.start_button.setEnabled(False)
+        self.selection_info.setText("读取已停止，原 PDF 没有发生任何变化。")
+        self.preview_count.setText("已停止")
+        self._show_empty_state("已停止读取这份 PDF")
+        self.status_label.setText("PDF 读取已停止")
+        self.progress_bar.setValue(0)
+
+    def _populate_assets(
+        self,
+        path: Path,
+        assets: list[PDFAsset],
+        generation: int,
+        page_count: int,
+    ) -> None:
         self._clear_preview_grid()
+        self._asset_population_generation = generation
         if not assets:
             self._show_empty_state("没有识别到 Figure 或独立位图")
             self.preview_count.setText("0 个图形")
             self._set_asset_controls_enabled(False)
+            self._finish_asset_population(path, assets, generation, page_count)
             return
-        for index, asset in enumerate(assets):
+        self.preview_count.setText(f"正在准备预览 · 0 / {len(assets)}")
+        self._set_asset_controls_enabled(False)
+        self._populate_asset_batch(path, assets, generation, page_count, 0)
+
+    def _populate_asset_batch(
+        self,
+        path: Path,
+        assets: list[PDFAsset],
+        generation: int,
+        page_count: int,
+        start_index: int,
+    ) -> None:
+        if (
+            generation != self.scan_generation
+            or generation != self._asset_population_generation
+            or path != self.input_path
+        ):
+            return
+        end_index = min(len(assets), start_index + 4)
+        for index in range(start_index, end_index):
+            asset = assets[index]
             card = AssetCard(asset, selected=True)
             card.preview_requested.connect(self._open_preview)
             card.selection_changed.connect(self._asset_selection_changed)
             self.preview_grid.addWidget(card, index // 2, index % 2)
             self.asset_cards[asset.key] = card
-            self._fade_in(card, index * 24)
+            self._fade_in(card, (index - start_index) * 28)
+        self.preview_count.setText(
+            f"正在准备预览 · {end_index} / {len(assets)}"
+        )
+        if end_index < len(assets):
+            QTimer.singleShot(
+                8,
+                lambda: self._populate_asset_batch(
+                    path, assets, generation, page_count, end_index
+                ),
+            )
+            return
+        self._finish_asset_population(path, assets, generation, page_count)
+
+    def _finish_asset_population(
+        self,
+        path: Path,
+        assets: list[PDFAsset],
+        generation: int,
+        page_count: int,
+    ) -> None:
+        if generation != self.scan_generation or path != self.input_path:
+            return
         final_row = (len(assets) + 1) // 2
         self.preview_grid.setRowStretch(final_row, 1)
         total_storage = sum(asset.storage_bytes for asset in assets)
         self.preview_count.setText(
             f"{len(assets)} 项 · 约 {format_bytes(total_storage)}"
+            if assets
+            else "0 个图形"
         )
-        self._set_asset_controls_enabled(True)
+        self._set_asset_controls_enabled(bool(assets))
         self.preview_scroll.verticalScrollBar().setValue(0)
+
+        self._start_thumbnail_loading(path, assets)
+        self.assets_loading = False
+        self.file_button.setEnabled(True)
+        self.file_button.setText("选择文件")
+        self.start_button.setEnabled(True)
+        self._update_selection_info()
+        self.status_label.setText(
+            f"已读完 {page_count} 页，选择图形后即可开始压缩"
+        )
+
+    def _start_thumbnail_loading(
+        self, path: Path, assets: list[PDFAsset]
+    ) -> None:
+        if not assets:
+            return
 
         if self.thumbnail_worker:
             self.thumbnail_worker.cancel()
@@ -1773,6 +2146,8 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, APP_NAME, message)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.scan_worker:
+            self.scan_worker.cancel()
         if self.thumbnail_worker:
             self.thumbnail_worker.cancel()
         if self.compression_worker:
@@ -1798,8 +2173,22 @@ def main() -> None:
     app.setStyleSheet(APP_STYLE)
     window = MainWindow()
     window.show()
+    launch_pdf = next(
+        (
+            Path(argument)
+            for argument in sys.argv[1:]
+            if argument.lower().endswith(".pdf")
+            and Path(argument).is_file()
+        ),
+        None,
+    )
+    if launch_pdf is not None:
+        QTimer.singleShot(
+            0, lambda selected=launch_pdf: window._load_input(selected)
+        )
     sys.exit(app.exec())
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
