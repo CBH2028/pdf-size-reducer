@@ -7,6 +7,7 @@
 在尽量保住小字符、细线和原生文字层的前提下，把 PDF 压到你指定的大小。
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
+[![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
 [![Tests](https://img.shields.io/badge/tests-14%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
@@ -118,6 +119,16 @@ PDF 渲染、像素缩放和 JPEG 编码由 MuPDF、Pillow 与 Qt 的原生 C/C+
 ## 隐私
 
 所有 PDF 均在本机处理，不会上传到服务器。本项目不包含遥测、账号系统或网络分析代码。
+
+## Star History
+
+<div align="center">
+
+[![Star History Chart](https://api.star-history.com/svg?repos=CBH2028/pdf-size-reducer&type=Date)](https://www.star-history.com/#CBH2028/pdf-size-reducer&Date)
+
+</div>
+
+曲线由 Star History 根据 GitHub Star 数据在线生成，点击图表可查看详情。
 
 ## 参与贡献
 
