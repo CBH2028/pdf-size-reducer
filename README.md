@@ -1,61 +1,83 @@
+<div align="right">
+
+**English** | [简体中文](README.zh-CN.md)
+
+</div>
+
 <div align="center">
 
 # PDF Size Reducer
 
-**面向论文与科研图表的精确定容 PDF 压缩工具**
+**Loss-minimizing PDF compression for everyday file-size limits**
 
-在尽量保住小字符、细线和原生文字层的前提下，把 PDF 压到你指定的大小。
+When an assignment portal, application form, expense system, or submission site limits PDF size, there is no need to reopen Word, PowerPoint, or every source image. Choose the PDF, enter the required size, and decide which images may be reduced.
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-15%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-15%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
 
-[下载 Windows 版](https://github.com/CBH2028/pdf-size-reducer/releases/latest) · [查看修改日志](CHANGELOG.md) · [报告问题](https://github.com/CBH2028/pdf-size-reducer/issues)
+[Download for Windows](https://github.com/CBH2028/pdf-size-reducer/releases/latest) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/CBH2028/pdf-size-reducer/issues)
 
 </div>
 
-![PDF Size Reducer 加载界面](docs/images/app-loading.png)
+![PDF Size Reducer loading a large document](docs/images/app-loading.png)
 
-## 操作演示
+## Operation demo
 
 <div align="center">
 
-[![PDF Size Reducer 操作演示](docs/media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4)
+[![PDF Size Reducer operation demo](docs/media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4)
 
-**真实加载 97.92 MiB / 48 页 PDF：后台读取 → Figure 全景预览 → 放大检查 → 排除部分图形 → 精确输入目标 → 输出完成**
+**A real 97.92 MiB / 48-page PDF: background scan → full-Figure preview → zoom → selective exclusion → exact target → completed output**
 
-[下载高清 MP4](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4) · [下载演示 PDF](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Stress_Demo_97.92MB.pdf) · [查看演示与压力测试说明](docs/DEMO.md)
+[Download HD MP4](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4) · [Download demo PDF](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Stress_Demo_97.92MB.pdf) · [Demo and stress-test notes](docs/DEMO.md)
 
 </div>
 
-## 为什么做这个工具
+## Why this tool exists
 
-常见 PDF 压缩器会把整页降采样，论文正文、公式和图注也会一起变糊；简单地把图片放进 PowerPoint 再导出 PDF，质量通常不错，却需要逐张手工处理。PDF Size Reducer 将这个过程自动化：识别论文中的完整 Figure，只处理用户勾选的图形内容，并持续搜索最接近目标体积的高质量方案。
+The PDF is often already finished when a website says it is too large. The usual choices are repetitive manual export work or whole-page rasterization that also blurs body text, equations, links, and captions.
 
-> **它不会把所有页面统一图像化。** 正文、公式、链接、批注以及未勾选的 Figure 保持原样；可识别的图内文字继续保留为清晰、可搜索、可复制的 PDF 文字。
+PDF Size Reducer automates the careful route. It discovers complete figures, shows their previews and estimated storage, lets you choose only the images that may change, and searches for the clearest result that stays within the requested limit.
 
-## 功能亮点
+> **It does not rasterize every page.** Body text, equations, links, annotations, and unselected figures remain untouched. Text that can be recognized inside a selected figure is kept as a sharp, searchable, copyable PDF text layer.
 
-| 功能 | 说明 |
+Typical situations include:
+
+- uploading homework, forms, portfolios, receipts, or certificates to a size-limited portal;
+- submitting a report or paper without manually rebuilding its figures;
+- reducing only the largest images while preserving important screenshots or diagrams;
+- getting close to an exact MB or KB limit with the least practical visual loss.
+
+## Important: possible black backgrounds in PowerPoint vector figures
+
+Vector artwork exported from PowerPoint may contain complex transparency, masks, gradients, or grouped drawing objects. When the app reduces such a Figure, a small number of PDFs may render its background as solid black. This depends on the PDF drawing structure and viewer compatibility, so it cannot currently be ruled out for every PowerPoint-generated figure.
+
+If this happens, **uncheck that Figure in the preview list and run the task again**. An unchecked Figure is preserved exactly as it appears in the source PDF; the app will reduce only the remaining selected images. Always give the output PDF a quick visual check before submitting it.
+
+## Highlights
+
+| Feature | What it does |
 | --- | --- |
-| 精确定容 | 输入 MB 或 KB，自动寻找不超过目标大小且尽可能清晰的结果，不靠填充无意义字节伪造体积。 |
-| 完整 Figure 识别 | 根据 `Fig. X`、`Figure X` 或 `图 X` 图注，把位图、矢量线条、箭头和文字组成的论文插图视为一个项目。 |
-| 可视化选择 | 主界面直接显示双列全景缩略图、类型和估算占用；点击即可打开约 240 DPI 高清预览并平滑缩放。 |
-| 清晰度优先 | 采用接近 PowerPoint 导出的高分辨率、适度 JPEG 压缩策略，优先保护小字符和细线。 |
-| 透明背景安全 | Figure 替代图统一使用无 Alpha、无软蒙版的白底 RGB JPEG，避免部分阅读器出现黑色背景。 |
-| Apple 风格界面 | Qt 6 圆角卡片、柔和阴影、缩略图淡入、高 DPI 适配，以及读取和高清预览阶段带呼吸光与动态文案的真实加载反馈。 |
-| 始终可响应 | Figure 扫描与缩略图渲染使用隔离子进程，高清预览和压缩使用后台任务；大型科研图表不会锁死主窗口，并可随时停止读取。 |
+| Exact size target | Enter MB or KB. The app searches for the clearest result at or below the target instead of padding a file with meaningless bytes. |
+| Loss-minimizing workflow | Lossless structural optimization is tried first. Image or Figure data is reduced only when lossless work cannot reach the target. |
+| Complete Figure discovery | Captions such as `Fig. X`, `Figure X`, and `图 X` are used to group bitmaps, vector paths, arrows, and labels into one selectable item. |
+| Visual selection | Browse full-view thumbnails, type, and estimated storage in the main window. Click any card for a zoomable preview rendered at about 240 DPI. |
+| Clarity first | High resolution and moderate JPEG compression are preferred to protect small characters and thin lines. |
+| Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
+| Responsive interface | Figure scanning and thumbnail rendering run in isolated processes. Large documents do not lock the main window and scanning can be stopped safely. |
+| Polished desktop UI | Qt 6 cards, soft shadows, progressive thumbnails, high-DPI support, and warm animated feedback during scanning and HD preview generation. |
 
-## 快速开始
+## Quick start
 
-### 方式一：下载免安装版
+### Option 1: portable Windows build
 
-前往 [Releases](https://github.com/CBH2028/pdf-size-reducer/releases/latest) 下载 `PDF_Size_Reducer.exe`，双击即可运行，无需安装 Python。
+Open [Releases](https://github.com/CBH2028/pdf-size-reducer/releases/latest), download `PDF_Size_Reducer.exe`, and run it. Python is not required.
 
-### 方式二：从源码运行
+### Option 2: run from source
 
 ```powershell
 git clone https://github.com/CBH2028/pdf-size-reducer.git
@@ -65,39 +87,40 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe qt_app.py
 ```
 
-也可以直接双击 `start_pdf_tool.bat`，脚本会自动创建独立环境并安装依赖。
+On Windows, `start_pdf_tool.bat` can also create the isolated environment, install dependencies, and start the app.
 
-## 使用方法
+## How to use it
 
-1. 点击“选择文件”，或把 PDF 拖入窗口；
-2. 等待程序逐页识别 Figure；窗口在此期间仍可移动和响应；
-3. 在右侧查看每个图形的全景缩略图与占用，点击缩略图可放大确认；
-4. 勾选需要压缩的 Figure 或独立位图；
-5. 输入目标大小，确认保存位置，点击“开始智能压缩”。
+1. Click **Choose File**, or drag a PDF into the window.
+2. Let the app discover figures page by page. The window remains responsive while it works.
+3. Review each full-view thumbnail and estimated storage; click a thumbnail to zoom in.
+4. Keep the images or Figures that may be reduced checked. Uncheck anything that must remain unchanged.
+5. Enter the required target size, confirm the output location, and start compression.
+6. Review the generated PDF. If a PowerPoint vector figure has a black background, uncheck it and run the task again.
 
-原 PDF 始终保持不变。如果输出文件已存在，程序会先询问是否覆盖。
+The source PDF is never overwritten. If the selected output path already exists, the app asks before replacing it.
 
-## 工作原理
+## How it works
 
 ```mermaid
 flowchart LR
-    A[读取 PDF 结构] --> B[按图注识别完整 Figure]
-    B --> C[用户预览并选择]
-    C --> D[无损结构优化]
-    D --> E{达到目标?}
-    E -- 是 --> F[输出 PDF]
-    E -- 否 --> G[搜索分辨率与 JPEG 质量]
-    G --> H[逐 Figure 微调体积]
+    A[Read PDF structure] --> B[Discover complete Figures]
+    B --> C[Preview and select]
+    C --> D[Lossless optimization]
+    D --> E{Target reached?}
+    E -- Yes --> F[Write output PDF]
+    E -- No --> G[Search resolution and JPEG quality]
+    G --> H[Fine-tune individual Figures]
     H --> F
 ```
 
-- 首先尝试无损结构优化；若已经达到目标，不改动图像质量。
-- 独立位图会按候选分辨率和 JPEG 质量重新编码。
-- 完整 Figure 的图形层会在 180–720 DPI 范围内搜索，可识别文字保留在上层。
-- 400 级质量刻度配合 DPI 与单图微调，减少“只能得到 3.97 MB 或 2.97 MB”这类大跨度跳档。
-- 如果目标小到无法维持 180 DPI，程序会报告当前内容可实现的最小大小，而不是继续输出难以辨认的结果。
+- Lossless structural optimization runs first. If it is enough, image quality is not changed.
+- Standalone bitmaps are re-encoded across candidate resolutions and JPEG quality levels.
+- Selected complete Figures are searched between 180 and 720 DPI, while recognizable text stays in an upper PDF text layer.
+- A 400-step quality scale, DPI search, and per-Figure tuning avoid large jumps such as only being able to produce 3.97 MB or 2.97 MB.
+- If the target would require going below the 180 DPI clarity floor, the app reports the smallest safe result instead of silently producing unreadable content.
 
-## 开发与测试
+## Development and testing
 
 ```powershell
 py -3 -m venv .venv
@@ -106,7 +129,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
 ```
 
-运行可重复的大文件界面压力测试：
+Run the reproducible large-file UI stress test:
 
 ```powershell
 .\.venv\Scripts\python.exe .\tools\stress_test.py `
@@ -114,38 +137,38 @@ py -3 -m venv .venv
     --vector-paths 90 --timeout 300
 ```
 
-该命令会临时生成约 98 MB 的合成科研 PDF，监测 Qt 事件循环、扫描、缩略图和内存指标，结束后自动删除测试文件。也可以用 `--pdf "D:\path\large.pdf"` 测试已有文件，或用 `--cancel-after-ms 500` 验证安全取消。
+The command creates a temporary synthetic research-style PDF of about 98 MiB, monitors the Qt event loop, scanning, thumbnails, and memory, and removes the file afterward. Use `--pdf "D:\path\large.pdf"` to test an existing file or `--cancel-after-ms 500` to verify safe cancellation.
 
-生成单文件 Windows 程序：
+Build the single-file Windows executable with:
 
 ```powershell
 .\build_exe.bat
 ```
 
-构建结果位于 `dist\PDF_Size_Reducer.exe`。
+The result is written to `dist\PDF_Size_Reducer.exe`.
 
-## 项目结构
+## Project structure
 
 ```text
 pdf-size-reducer/
-├── qt_app.py              # Qt 6 桌面界面与后台任务
-├── compressor.py          # Figure 识别、渲染与精确定容引擎
-├── tests/                 # 压缩与内容保真回归测试
-├── tools/stress_test.py   # 大型 PDF 生成与界面响应压力测试
-├── tools/record_demo.py   # 驱动真实界面并安全录制操作演示
-├── docs/media/            # README 动图与高清操作视频
-├── start_pdf_tool.bat     # 一键启动脚本
-├── build_exe.bat          # PyInstaller 构建脚本
-└── CHANGELOG.md           # 完整修改日志
+├── qt_app.py              # Qt 6 desktop UI and background jobs
+├── compressor.py          # Figure discovery, rendering, and targeting engine
+├── tests/                 # Compression and content-preservation regressions
+├── tools/stress_test.py   # Large-PDF generator and UI responsiveness test
+├── tools/record_demo.py   # Reproducible, application-only demo recorder
+├── docs/media/            # README animation and HD demo video
+├── start_pdf_tool.bat     # One-click source launcher
+├── build_exe.bat          # PyInstaller build script
+└── CHANGELOG.md           # Full change history
 ```
 
-PDF 渲染、像素缩放和 JPEG 编码由 MuPDF、Pillow 与 Qt 的原生 C/C++ 核心完成。Python 负责流程编排，因此把外层全部重写为 C++ 对总体处理时间帮助有限；更有效的优化方向是减少重复候选、复用渲染结果和并行处理独立图形。
+MuPDF, Pillow, and Qt perform PDF rendering, pixel scaling, and JPEG encoding in native C/C++ code. Python coordinates the workflow, so rewriting only the outer application in C++ would provide limited improvement. Avoiding repeated candidates, reusing rendered data, and parallelizing independent figures are more valuable optimizations.
 
-## 隐私
+## Privacy
 
-所有 PDF 均在本机处理，不会上传到服务器。本项目不包含遥测、账号系统或网络分析代码。
+All PDFs are processed locally. The app does not upload documents and contains no telemetry, account system, or network analytics.
 
-## Star History
+## Star history
 
 <div align="center">
 
@@ -153,12 +176,12 @@ PDF 渲染、像素缩放和 JPEG 编码由 MuPDF、Pillow 与 Qt 的原生 C/C+
 
 </div>
 
-曲线由 Star History 根据 GitHub Star 数据在线生成，点击图表可查看详情。
+The chart is generated online by Star History from public GitHub star data. Click it for details.
 
-## 参与贡献
+## Contributing
 
-欢迎提交 Issue 或 Pull Request。开始前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。重要行为变化会记录在 [CHANGELOG.md](CHANGELOG.md)。
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before getting started. Important behavior changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
-## 许可证
+## License
 
-本项目使用 [MIT License](LICENSE)。
+Released under the [MIT License](LICENSE).
