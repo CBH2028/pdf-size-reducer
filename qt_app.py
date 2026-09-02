@@ -87,7 +87,7 @@ from compressor import (
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.3"
+APP_VERSION = "3.3.1"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -425,6 +425,18 @@ QLabel#versionPill, QLabel#countPill {{
 }}
 QScrollArea#sidebarScroll {{
     background: transparent;
+}}
+QWidget#sidebarShell, QFrame#actionDock {{
+    background: transparent;
+}}
+QScrollArea#sidebarScroll QScrollBar:vertical {{
+    width: 6px;
+    margin: 5px 0px;
+}}
+QScrollArea#sidebarScroll QScrollBar::handle:vertical {{
+    background: rgba(142, 142, 147, 105);
+    border-radius: 3px;
+    min-height: 38px;
 }}
 QFrame[card="true"] {{
     background: rgba(255, 255, 255, 250);
@@ -1899,19 +1911,33 @@ class MainWindow(QMainWindow):
         body_layout.setSpacing(20)
         outer.addWidget(body, 1)
 
+        sidebar_shell = QWidget()
+        sidebar_shell.setObjectName("sidebarShell")
+        sidebar_shell.setFixedWidth(380)
+        sidebar_shell_layout = QVBoxLayout(sidebar_shell)
+        sidebar_shell_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_shell_layout.setSpacing(10)
+
         sidebar_scroll = SmoothScrollArea()
         sidebar_scroll.setObjectName("sidebarScroll")
         sidebar_scroll.setWidgetResizable(True)
         sidebar_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        sidebar_scroll.setFixedWidth(374)
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(3, 3, 10, 10)
         sidebar_layout.setSpacing(12)
         sidebar_scroll.setWidget(sidebar)
-        body_layout.addWidget(sidebar_scroll)
+        sidebar_shell_layout.addWidget(sidebar_scroll, 1)
+
+        action_dock = QFrame()
+        action_dock.setObjectName("actionDock")
+        action_dock_layout = QVBoxLayout(action_dock)
+        action_dock_layout.setContentsMargins(3, 0, 10, 4)
+        action_dock_layout.setSpacing(9)
+        sidebar_shell_layout.addWidget(action_dock, 0)
+        body_layout.addWidget(sidebar_shell)
 
         file_card = self._card()
         add_shadow(file_card, 24, 5)
@@ -1972,6 +1998,7 @@ class MainWindow(QMainWindow):
         self.output_info.setWordWrap(True)
         output_layout.addWidget(self.output_info)
         sidebar_layout.addWidget(output_card)
+        sidebar_layout.addStretch(1)
 
         status_card = self._card()
         add_shadow(status_card, 22, 4)
@@ -1993,12 +2020,12 @@ class MainWindow(QMainWindow):
         self.result_label.setWordWrap(True)
         self.result_label.setProperty("secondary", True)
         status_layout.addWidget(self.result_label)
-        sidebar_layout.addWidget(status_card)
+        action_dock_layout.addWidget(status_card)
 
         self.start_button = PremiumButton("开始智能压缩   →")
         self.start_button.clicked.connect(self.start_compression)
         self.start_button.setEnabled(False)
-        sidebar_layout.addWidget(self.start_button)
+        action_dock_layout.addWidget(self.start_button)
         action_row = QHBoxLayout()
         action_row.setSpacing(9)
         self.cancel_button = QPushButton("取消任务")
@@ -2013,13 +2040,12 @@ class MainWindow(QMainWindow):
         self.open_button.clicked.connect(self.open_output_folder)
         action_row.addWidget(self.cancel_button)
         action_row.addWidget(self.open_button)
-        sidebar_layout.addLayout(action_row)
+        action_dock_layout.addLayout(action_row)
         safety = QLabel("✓ 本地处理  ·  原 PDF 不变  ·  未勾选内容保持原样")
         safety.setObjectName("safetyNote")
         safety.setAlignment(Qt.AlignmentFlag.AlignCenter)
         safety.setWordWrap(True)
-        sidebar_layout.addWidget(safety)
-        sidebar_layout.addStretch(1)
+        action_dock_layout.addWidget(safety)
 
         preview_panel = self._card()
         preview_panel.setObjectName("previewPanel")
