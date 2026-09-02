@@ -39,6 +39,7 @@ class DemoRecorder(QObject):
         width: int,
         height: int,
         timeout_seconds: int,
+        show_caption: bool,
     ) -> None:
         super().__init__()
         self.app = app
@@ -49,6 +50,7 @@ class DemoRecorder(QObject):
         self.width = width
         self.height = height
         self.timeout_seconds = timeout_seconds
+        self.show_caption = show_caption
         self.frame_number = 0
         self.started = time.monotonic()
         self.state_started = self.started
@@ -124,17 +126,18 @@ class DemoRecorder(QObject):
             )
             painter.drawPixmap(left, top, scaled)
 
-        font = QFont("Microsoft YaHei UI", 12)
-        font.setWeight(QFont.Weight.DemiBold)
-        painter.setFont(font)
-        metrics = painter.fontMetrics()
-        text_width = metrics.horizontalAdvance(self.caption)
-        pill = QRect(28, self.height - 70, text_width + 38, 42)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(29, 29, 31, 224))
-        painter.drawRoundedRect(pill, 21, 21)
-        painter.setPen(QColor("white"))
-        painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, self.caption)
+        if self.show_caption:
+            font = QFont("Microsoft YaHei UI", 12)
+            font.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
+            text_width = metrics.horizontalAdvance(self.caption)
+            pill = QRect(28, self.height - 70, text_width + 38, 42)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(29, 29, 31, 224))
+            painter.drawRoundedRect(pill, 21, 21)
+            painter.setPen(QColor("white"))
+            painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, self.caption)
         painter.end()
 
         target = self.frame_dir / f"frame_{self.frame_number:06d}.png"
@@ -271,6 +274,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1440)
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument(
+        "--no-caption",
+        action="store_true",
+        help="Capture clean application frames without the demo caption pill",
+    )
     return parser.parse_args()
 
 
@@ -301,6 +309,7 @@ def main() -> int:
         args.width,
         args.height,
         args.timeout,
+        not args.no_caption,
     )
     QTimer.singleShot(250, recorder.start)
     return app.exec()

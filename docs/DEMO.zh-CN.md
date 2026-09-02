@@ -10,9 +10,9 @@
 
 ## 完整操作视频
 
-[![PDF Size Reducer 操作演示](media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4)
+[![PDF Size Reducer 操作演示](media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.3.0/PDF_Size_Reducer_Operation_Demo.mp4)
 
-视频使用 v3.2.0 的真实程序界面录制，完整展示以下过程：
+视频使用 v3.3.0 的真实商业化程序界面录制，完整展示以下过程：
 
 1. 后台读取 97.92 MiB、48 页的合成科研 PDF；
 2. 在主界面浏览 48 个完整 Figure 的全景缩略图与估算占用；
@@ -20,7 +20,7 @@
 4. 取消不需要处理的 Figure，输入精确目标大小；
 5. 执行任务并确认输出文件生成。
 
-[下载高清 MP4（1440 × 900，26 秒）](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4)
+[下载高清 MP4（1440 × 900，19 秒）](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.3.0/PDF_Size_Reducer_Operation_Demo.mp4)
 
 ## 演示 PDF
 
@@ -39,7 +39,7 @@
 
 ## 已测性能
 
-在本次测试环境中，扫描用时约 6.89 秒，扫描加全部缩略图约 9.24 秒；Qt 事件循环最大停顿约 125.81 ms，主进程峰值内存约 189.55 MiB。界面在处理期间保持响应，并可使用“停止读取”安全取消。
+在 v3.3.0 测试环境中，扫描用时约 6.62 秒，扫描加全部缩略图约 8.86 秒；Qt 事件循环最大停顿约 41.16 ms，主进程峰值内存约 113.11 MiB。界面在处理期间保持响应，并可使用“停止读取”安全取消。
 
 机器配置、磁盘速度和 PDF 结构会影响实际结果。这些数据用于回归比较，不代表所有设备的固定耗时。
 

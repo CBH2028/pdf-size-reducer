@@ -29,11 +29,11 @@
 
 <div align="center">
 
-[![PDF Size Reducer 操作演示](docs/media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4)
+[![PDF Size Reducer 操作演示](docs/media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.3.0/PDF_Size_Reducer_Operation_Demo.mp4)
 
 **真实加载 97.92 MiB / 48 页 PDF：后台读取 → Figure 全景预览 → 放大检查 → 排除部分图形 → 精确输入目标 → 输出完成**
 
-[下载高清 MP4](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4) · [下载演示 PDF](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Stress_Demo_97.92MB.pdf) · [查看演示与压力测试说明](docs/DEMO.zh-CN.md)
+[下载高清 MP4](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.3.0/PDF_Size_Reducer_Operation_Demo.mp4) · [下载演示 PDF](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Stress_Demo_97.92MB.pdf) · [查看演示与压力测试说明](docs/DEMO.zh-CN.md)
 
 </div>
 
@@ -61,7 +61,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 | 可视化选择 | 主界面直接显示双列全景缩略图、类型和估算占用；点击即可打开约 240 DPI 高清预览并平滑缩放。 |
 | 清晰度优先 | 采用接近 PowerPoint 导出的高分辨率、适度 JPEG 压缩策略，优先保护小字符和细线。 |
 | 黑底风险可规避 | 大多数透明 Figure 会转为白底 RGB；如复杂 PPT 矢量图仍出现黑底，可取消勾选该图并保持原样。 |
-| Apple 风格界面 | Qt 6 圆角卡片、柔和阴影、缩略图淡入、高 DPI 适配，以及读取和高清预览阶段带呼吸光与动态文案的真实加载反馈。 |
+| 商业级桌面界面 | 玻璃感顶栏、结构化流程卡、动态状态灯、渐变主操作、缩略图淡入、悬停光影、惯性平滑滚动和高 DPI 适配。 |
 | 始终可响应 | Figure 扫描与缩略图渲染使用隔离子进程，高清预览和压缩使用后台任务；大型科研图表不会锁死主窗口，并可随时停止读取。 |
 
 ## 快速开始

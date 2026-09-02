@@ -29,11 +29,11 @@ When an assignment portal, application form, expense system, or submission site 
 
 <div align="center">
 
-[![PDF Size Reducer operation demo](docs/media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4)
+[![PDF Size Reducer operation demo](docs/media/operation-demo.gif)](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.3.0/PDF_Size_Reducer_Operation_Demo.mp4)
 
 **A real 97.92 MiB / 48-page PDF: background scan → full-Figure preview → zoom → selective exclusion → exact target → completed output**
 
-[Download HD MP4](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Operation_Demo.mp4) · [Download demo PDF](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Stress_Demo_97.92MB.pdf) · [Demo and stress-test notes](docs/DEMO.md)
+[Download HD MP4](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.3.0/PDF_Size_Reducer_Operation_Demo.mp4) · [Download demo PDF](https://github.com/CBH2028/pdf-size-reducer/releases/download/v3.2.0/PDF_Size_Reducer_Stress_Demo_97.92MB.pdf) · [Demo and stress-test notes](docs/DEMO.md)
 
 </div>
 
@@ -69,7 +69,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Clarity first | High resolution and moderate JPEG compression are preferred to protect small characters and thin lines. |
 | Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
 | Responsive interface | Figure scanning and thumbnail rendering run in isolated processes. Large documents do not lock the main window and scanning can be stopped safely. |
-| Polished desktop UI | Qt 6 cards, soft shadows, progressive thumbnails, high-DPI support, and warm animated feedback during scanning and HD preview generation. |
+| Commercial-grade desktop UI | A glass-like header, structured workflow cards, animated status, a gradient primary action, progressive thumbnails, hover feedback, smooth scrolling, and high-DPI support. |
 
 ## Quick start
 

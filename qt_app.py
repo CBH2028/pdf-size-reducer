@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from PySide6.QtCore import (
+    QAbstractAnimation,
     QEasingCurve,
     QElapsedTimer,
     QObject,
@@ -35,6 +36,7 @@ from PySide6.QtGui import (
     QFont,
     QIcon,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QRadialGradient,
@@ -85,16 +87,16 @@ from compressor import (
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.2"
-ACCENT = "#5E5CE6"
-ACCENT_HOVER = "#4F46D5"
-TEXT = "#1D1D1F"
-MUTED = "#6E6E73"
-BACKGROUND = "#F5F5F7"
+APP_VERSION = "3.3"
+ACCENT = "#635BFF"
+ACCENT_HOVER = "#5149E8"
+TEXT = "#18181B"
+MUTED = "#71717A"
+BACKGROUND = "#F3F4F8"
 CARD = "#FFFFFF"
-BORDER = "#E5E5EA"
-SUCCESS = "#248A3D"
-ERROR = "#D70015"
+BORDER = "#E4E5EC"
+SUCCESS = "#2E9B56"
+ERROR = "#DC3545"
 
 
 APP_STYLE = f"""
@@ -370,6 +372,320 @@ QGraphicsView {{
 }}
 """
 
+# The second layer deliberately contains only visual overrides.  Keeping the
+# base rules above stable makes the interaction code easy to maintain while
+# this layer provides the more refined commercial product surface.
+APP_STYLE += f"""
+* {{
+    font-family: "Segoe UI Variable", "Microsoft YaHei UI", "Segoe UI";
+}}
+QMainWindow, QWidget#root {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #F7F7FB,
+        stop: 0.46 #F3F4F8,
+        stop: 1 #EEF1F8
+    );
+}}
+QFrame#topBar {{
+    background: rgba(255, 255, 255, 248);
+    border-bottom: 1px solid #E8E8EF;
+}}
+QLabel#appTitle {{
+    font-size: 20px;
+    font-weight: 750;
+    color: #151518;
+}}
+QLabel#appSubtitle {{
+    font-size: 10px;
+    color: #85858E;
+}}
+QFrame#privacyPill {{
+    background: #F1F8F3;
+    border: 1px solid #DDEFE2;
+    border-radius: 14px;
+}}
+QLabel#privacyText {{
+    color: #287A43;
+    font-size: 10px;
+    font-weight: 650;
+}}
+QLabel#privacyDot {{
+    color: #2EAF5D;
+    font-size: 12px;
+}}
+QLabel#versionPill, QLabel#countPill {{
+    color: {ACCENT};
+    background: #EFEEFF;
+    border: 1px solid #E2E0FF;
+    border-radius: 11px;
+    padding: 6px 10px;
+    font-size: 9px;
+    font-weight: 750;
+}}
+QScrollArea#sidebarScroll {{
+    background: transparent;
+}}
+QFrame[card="true"] {{
+    background: rgba(255, 255, 255, 250);
+    border: 1px solid #E5E6ED;
+    border-radius: 20px;
+}}
+QFrame#previewPanel {{
+    background: rgba(255, 255, 255, 252);
+    border: 1px solid #E3E4EC;
+    border-radius: 24px;
+}}
+QLabel#stepBadge {{
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 24px;
+    max-height: 24px;
+    color: {ACCENT};
+    background: #EFEEFF;
+    border: 1px solid #E0DEFF;
+    border-radius: 8px;
+    font-size: 9px;
+    font-weight: 800;
+}}
+QLabel#cardTitle {{
+    color: #27272A;
+    font-size: 12px;
+    font-weight: 720;
+}}
+QLabel#fieldValue {{
+    color: #3F3F46;
+    background: #F8F8FB;
+    border: 1px solid #EEEFF4;
+    border-radius: 10px;
+    padding: 9px 11px;
+    font-size: 10px;
+}}
+QLabel#statusLabel {{
+    color: #27272A;
+    font-size: 11px;
+    font-weight: 700;
+}}
+QLabel#selectionInfo {{
+    color: #554DE5;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #F0EFFF,
+        stop: 1 #F7F5FF
+    );
+    border: 1px solid #E5E2FF;
+    border-radius: 11px;
+    padding: 9px 11px;
+    font-size: 9px;
+    font-weight: 650;
+}}
+QLabel#safetyNote {{
+    color: #777780;
+    background: rgba(255, 255, 255, 145);
+    border: 1px solid #E7E8EE;
+    border-radius: 11px;
+    padding: 8px 10px;
+    font-size: 9px;
+}}
+QPushButton {{
+    min-height: 36px;
+    padding: 0 14px;
+    border-radius: 11px;
+    border: 1px solid #E0E1E8;
+    background: #FAFAFC;
+    color: #3F3F46;
+    font-size: 10px;
+    font-weight: 650;
+}}
+QPushButton:hover {{
+    background: #F2F2F7;
+    border-color: #D2D3DE;
+    color: #202024;
+}}
+QPushButton:pressed {{
+    background: #EAEAFA;
+    border-color: #C8C6F5;
+}}
+QPushButton[quiet="true"] {{
+    min-height: 30px;
+    padding: 0 11px;
+    border-radius: 9px;
+    background: #F8F8FB;
+    font-size: 9px;
+}}
+QPushButton#primaryButton {{
+    min-height: 50px;
+    border: 1px solid #554DE5;
+    border-radius: 15px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #7770FF,
+        stop: 0.5 #635BFF,
+        stop: 1 #5149E8
+    );
+    color: white;
+    font-size: 12px;
+    font-weight: 760;
+}}
+QPushButton#primaryButton:hover {{
+    border-color: #4D45D8;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #827CFF,
+        stop: 0.5 #6A62FF,
+        stop: 1 #554DEB
+    );
+}}
+QPushButton#primaryButton:pressed {{ background: #4B43D4; }}
+QPushButton#primaryButton:disabled {{
+    color: rgba(255, 255, 255, 220);
+    border-color: #C9C7EB;
+    background: #C9C7EB;
+}}
+QLineEdit, QComboBox {{
+    min-height: 42px;
+    border: 1px solid #DDDEE6;
+    border-radius: 12px;
+    background: #F9F9FC;
+    padding: 0 13px;
+    color: #27272A;
+    font-size: 11px;
+    font-weight: 600;
+}}
+QLineEdit:hover, QComboBox:hover {{
+    background: white;
+    border-color: #CBCBD8;
+}}
+QLineEdit:focus, QComboBox:focus {{
+    border: 2px solid #746DFF;
+    background: white;
+}}
+QProgressBar {{
+    height: 6px;
+    border: none;
+    border-radius: 3px;
+    background: #ECECF2;
+}}
+QProgressBar::chunk {{
+    border-radius: 3px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #7770FF,
+        stop: 0.55 #635BFF,
+        stop: 1 #9A7CFF
+    );
+}}
+QFrame#segmentedControl {{
+    background: #F3F3F7;
+    border: 1px solid #E6E6ED;
+    border-radius: 12px;
+}}
+QPushButton[segment="true"] {{
+    min-height: 30px;
+    padding: 0 13px;
+    border: none;
+    border-radius: 9px;
+    background: transparent;
+    color: #6E6E76;
+    font-size: 9px;
+}}
+QPushButton[segment="true"]:hover {{
+    background: white;
+    color: {ACCENT};
+}}
+QFrame[assetCard="true"] {{
+    background: #FFFFFF;
+    border: 1px solid #E6E7EE;
+    border-radius: 17px;
+}}
+QFrame[assetCard="true"]:hover {{
+    background: #FEFEFF;
+    border: 1px solid #BEBBFF;
+}}
+QLabel#previewImage {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 #F8F9FC,
+        stop: 1 #F3F4F8
+    );
+    border: 1px solid #ECECF2;
+    border-radius: 13px;
+}}
+QLabel#typePill {{
+    color: #625BE8;
+    background: #F0EFFF;
+    border: 1px solid #E3E1FF;
+    border-radius: 8px;
+    padding: 4px 7px;
+    font-size: 7px;
+    font-weight: 800;
+}}
+QLabel#sizePill {{
+    color: #5952D7;
+    background: #F2F1FF;
+    border-radius: 9px;
+    padding: 5px 8px;
+    font-size: 8px;
+    font-weight: 700;
+}}
+QLabel#zoomHint {{
+    color: #777780;
+    font-size: 8px;
+    font-weight: 600;
+}}
+QFrame#emptyState {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #FFFFFF,
+        stop: 1 #F7F6FF
+    );
+    border: 1px solid #E3E1FF;
+    border-radius: 26px;
+}}
+QLabel#emptyEyebrow {{
+    color: {ACCENT};
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+}}
+QLabel#emptyTitle {{
+    color: #202024;
+    font-size: 19px;
+    font-weight: 750;
+}}
+QLabel#emptyDropPill {{
+    color: #5D56DF;
+    background: #EFEEFF;
+    border: 1px solid #E0DEFF;
+    border-radius: 11px;
+    padding: 8px 13px;
+    font-size: 9px;
+    font-weight: 700;
+}}
+QScrollBar:vertical {{ width: 8px; margin: 4px 1px; }}
+QScrollBar::handle:vertical {{
+    background: rgba(142, 142, 147, 135);
+    border-radius: 4px;
+    min-height: 42px;
+}}
+QFrame#readingGlass {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 rgba(250, 250, 255, 252),
+        stop: 0.52 rgba(255, 255, 255, 255),
+        stop: 1 rgba(243, 242, 255, 252)
+    );
+    border: 1px solid #E1DFFF;
+    border-radius: 28px;
+}}
+QDialog {{ background: #F5F6FA; }}
+QGraphicsView {{
+    background: #E9EBF2;
+    border: 1px solid #E0E1E8;
+    border-radius: 18px;
+}}
+"""
+
 
 def make_app_icon() -> QIcon:
     pixmap = QPixmap(64, 64)
@@ -377,12 +693,28 @@ def make_app_icon() -> QIcon:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(ACCENT))
-    painter.drawRoundedRect(QRectF(4, 4, 56, 56), 15, 15)
-    painter.setPen(QColor("white"))
-    font = QFont("Segoe UI", 12, QFont.Weight.Bold)
-    painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "PDF")
+    glow = QRadialGradient(24, 18, 72)
+    glow.setColorAt(0.0, QColor("#8F89FF"))
+    glow.setColorAt(0.56, QColor(ACCENT))
+    glow.setColorAt(1.0, QColor("#4941CF"))
+    painter.setBrush(glow)
+    painter.drawRoundedRect(QRectF(3, 3, 58, 58), 17, 17)
+
+    painter.setBrush(QColor(255, 255, 255, 248))
+    painter.drawRoundedRect(QRectF(19, 14, 27, 36), 5, 5)
+    fold = QPainterPath()
+    fold.moveTo(37, 14)
+    fold.lineTo(46, 23)
+    fold.lineTo(37, 23)
+    fold.closeSubpath()
+    painter.setBrush(QColor("#DCD9FF"))
+    painter.drawPath(fold)
+    line_pen = QPen(QColor(99, 91, 255, 205), 2.2)
+    line_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(line_pen)
+    painter.drawLine(QPoint(25, 30), QPoint(40, 30))
+    painter.drawLine(QPoint(25, 36), QPoint(40, 36))
+    painter.drawLine(QPoint(25, 42), QPoint(35, 42))
     painter.end()
     return QIcon(pixmap)
 
@@ -395,13 +727,141 @@ def add_shadow(widget: QWidget, blur: int = 24, y_offset: int = 6) -> None:
     widget.setGraphicsEffect(shadow)
 
 
+class SmoothScrollArea(QScrollArea):
+    """Wheel scrolling with momentum-like easing and touchpad support."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._scroll_target = 0
+        self._scroll_animation = QPropertyAnimation(
+            self.verticalScrollBar(), b"value", self
+        )
+        self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            super().wheelEvent(event)
+            return
+        pixel_delta = event.pixelDelta().y()
+        angle_delta = event.angleDelta().y()
+        if pixel_delta:
+            distance = pixel_delta * 1.35
+        elif angle_delta:
+            distance = angle_delta / 120.0 * 112
+        else:
+            super().wheelEvent(event)
+            return
+
+        bar = self.verticalScrollBar()
+        if self._scroll_animation.state() != QAbstractAnimation.State.Running:
+            self._scroll_target = bar.value()
+        self._scroll_target = max(
+            bar.minimum(),
+            min(bar.maximum(), int(self._scroll_target - distance)),
+        )
+        travel = abs(self._scroll_target - bar.value())
+        self._scroll_animation.stop()
+        self._scroll_animation.setDuration(max(160, min(340, 170 + travel // 3)))
+        self._scroll_animation.setStartValue(bar.value())
+        self._scroll_animation.setEndValue(self._scroll_target)
+        self._scroll_animation.start()
+        event.accept()
+
+
+class PremiumButton(QPushButton):
+    """Primary action with a restrained animated glow."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("primaryButton")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setBlurRadius(18)
+        self._shadow.setOffset(0, 6)
+        self._shadow.setColor(QColor(76, 67, 212, 62))
+        self.setGraphicsEffect(self._shadow)
+        self._glow_animation = QPropertyAnimation(
+            self._shadow, b"blurRadius", self
+        )
+        self._glow_animation.setDuration(190)
+        self._glow_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def _animate_glow(self, radius: float) -> None:
+        self._glow_animation.stop()
+        self._glow_animation.setStartValue(self._shadow.blurRadius())
+        self._glow_animation.setEndValue(radius)
+        self._glow_animation.start()
+
+    def enterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._animate_glow(30)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._animate_glow(18)
+        super().leaveEvent(event)
+
+
+class StatusIndicator(QWidget):
+    """Compact status light with a subtle pulse while work is active."""
+
+    _COLORS = {
+        "idle": QColor("#A1A1AA"),
+        "working": QColor(ACCENT),
+        "ready": QColor("#3BAA62"),
+        "success": QColor("#2E9B56"),
+        "error": QColor(ERROR),
+    }
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(18, 18)
+        self._state = "idle"
+        self._phase = 0.0
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(32)
+        self._pulse_timer.timeout.connect(self._tick)
+
+    def set_state(self, state: str) -> None:
+        self._state = state if state in self._COLORS else "idle"
+        self._phase = 0.0
+        if self._state == "working":
+            self._pulse_timer.start()
+        else:
+            self._pulse_timer.stop()
+        self.update()
+
+    def _tick(self) -> None:
+        self._phase += 0.12
+        self.update()
+
+    def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = self._COLORS[self._state]
+        if self._state == "working":
+            breath = (math.sin(self._phase) + 1.0) / 2.0
+            halo = QColor(color)
+            halo.setAlpha(int(28 + breath * 35))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(halo)
+            radius = 7.0 + breath * 1.6
+            painter.drawEllipse(
+                QRectF(9 - radius, 9 - radius, radius * 2, radius * 2)
+            )
+        painter.setPen(QPen(QColor(255, 255, 255, 220), 1.2))
+        painter.setBrush(color)
+        painter.drawEllipse(QRectF(5, 5, 8, 8))
+        painter.end()
+
+
 class AnimatedProgressBar(QProgressBar):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setTextVisible(False)
         self._animation = QPropertyAnimation(self, b"value", self)
-        self._animation.setDuration(260)
-        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._animation.setDuration(320)
+        self._animation.setEasingCurve(QEasingCurve.Type.OutQuart)
 
     def set_smooth_value(self, value: int) -> None:
         self._animation.stop()
@@ -512,7 +972,7 @@ class ReadingPanel(QWidget):
         "我在分辨文字、位图和矢量线条，页面本身不会被改动。",
         "正在把分散的图形对象重新理解为完整 Figure。",
         "稍后可以逐张预览，再决定哪些内容需要压缩。",
-        "复杂论文会多花一点时间，但窗口仍然可以正常移动。",
+        "复杂文档会多花一点时间，但窗口仍然可以正常操作。",
     )
 
     def __init__(self, file_name: str, file_size: str) -> None:
@@ -542,7 +1002,7 @@ class ReadingPanel(QWidget):
         self.eyebrow.setObjectName("readingEyebrow")
         self.eyebrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content.addWidget(self.eyebrow)
-        title = QLabel("正在读懂这篇论文")
+        title = QLabel("正在读懂这份 PDF")
         title.setObjectName("readingTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content.addWidget(title)
@@ -709,13 +1169,16 @@ class AssetCard(QFrame):
         super().__init__()
         self.asset = asset
         self._source_pixmap: QPixmap | None = None
+        self._hover_shadow: QGraphicsDropShadowEffect | None = None
+        self._hover_animation: QPropertyAnimation | None = None
         self.setProperty("assetCard", True)
-        self.setMinimumWidth(285)
+        self.setMinimumWidth(300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(11, 11, 11, 11)
-        layout.setSpacing(8)
+        layout.setContentsMargins(13, 13, 13, 12)
+        layout.setSpacing(10)
 
         header = QHBoxLayout()
         header.setSpacing(8)
@@ -734,8 +1197,8 @@ class AssetCard(QFrame):
         self.preview = ClickableLabel("正在生成全景预览…")
         self.preview.setObjectName("previewImage")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(158)
-        self.preview.setMaximumHeight(178)
+        self.preview.setMinimumHeight(166)
+        self.preview.setMaximumHeight(186)
         self.preview.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview.clicked.connect(lambda: self.preview_requested.emit(self.asset))
         layout.addWidget(self.preview)
@@ -792,6 +1255,45 @@ class AssetCard(QFrame):
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         self._update_preview_pixmap()
+
+    def enterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        # The fade-in effect owns the graphics-effect slot briefly.  Hover
+        # feedback begins after that transition instead of interrupting it.
+        if self.graphicsEffect() is None:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(10)
+            shadow.setOffset(0, 3)
+            shadow.setColor(QColor(65, 58, 170, 34))
+            self.setGraphicsEffect(shadow)
+            animation = QPropertyAnimation(shadow, b"blurRadius", self)
+            animation.setDuration(180)
+            animation.setStartValue(10)
+            animation.setEndValue(24)
+            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._hover_shadow = shadow
+            self._hover_animation = animation
+            animation.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        shadow = self._hover_shadow
+        if shadow is not None and self.graphicsEffect() is shadow:
+            animation = QPropertyAnimation(shadow, b"blurRadius", self)
+            animation.setDuration(150)
+            animation.setStartValue(shadow.blurRadius())
+            animation.setEndValue(8)
+            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+            def clear_shadow() -> None:
+                if self.graphicsEffect() is shadow:
+                    self.setGraphicsEffect(None)
+                self._hover_shadow = None
+                self._hover_animation = None
+
+            animation.finished.connect(clear_shadow)
+            self._hover_animation = animation
+            animation.start()
+        super().leaveEvent(event)
 
 
 def _asset_scan_process(
@@ -1290,8 +1792,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setWindowIcon(make_app_icon())
-        self.resize(1280, 820)
-        self.setMinimumSize(1080, 700)
+        self.resize(1400, 880)
+        self.setMinimumSize(1120, 720)
         self.setAcceptDrops(True)
 
         self.input_path: Path | None = None
@@ -1322,6 +1824,28 @@ class MainWindow(QMainWindow):
         frame.setProperty("card", True)
         return frame
 
+    def _step_header(
+        self,
+        number: str,
+        title: str,
+        action: QPushButton | None = None,
+    ) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(9)
+        badge = QLabel(number)
+        badge.setObjectName("stepBadge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(badge)
+        label = QLabel(title)
+        label.setObjectName("cardTitle")
+        row.addWidget(label)
+        row.addStretch(1)
+        if action is not None:
+            action.setProperty("quiet", True)
+            action.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.addWidget(action)
+        return row
+
     def _build_ui(self) -> None:
         root = QWidget()
         root.setObjectName("root")
@@ -1332,28 +1856,38 @@ class MainWindow(QMainWindow):
 
         top_bar = QFrame()
         top_bar.setObjectName("topBar")
-        top_bar.setFixedHeight(92)
+        top_bar.setFixedHeight(82)
         top_layout = QHBoxLayout(top_bar)
-        top_layout.setContentsMargins(26, 13, 26, 13)
-        top_layout.setSpacing(14)
+        top_layout.setContentsMargins(24, 10, 24, 10)
+        top_layout.setSpacing(13)
 
         icon_label = QLabel()
-        icon_label.setPixmap(make_app_icon().pixmap(48, 48))
-        icon_label.setFixedSize(50, 50)
+        icon_label.setPixmap(make_app_icon().pixmap(46, 46))
+        icon_label.setFixedSize(48, 48)
         top_layout.addWidget(icon_label)
         brand = QVBoxLayout()
-        brand.setSpacing(2)
-        title = QLabel(APP_NAME)
+        brand.setSpacing(1)
+        title = QLabel("PDF Size Reducer")
         title.setObjectName("appTitle")
-        subtitle = QLabel("精确定容 · 原生文字层 · 科研图表清晰优先")
+        subtitle = QLabel("智能定容 · 本地处理 · 清晰度优先")
         subtitle.setObjectName("appSubtitle")
         brand.addWidget(title)
         brand.addWidget(subtitle)
         top_layout.addLayout(brand)
         top_layout.addStretch(1)
-        safe = QLabel("原 PDF 始终不变")
-        safe.setProperty("secondary", True)
-        top_layout.addWidget(safe)
+
+        privacy = QFrame()
+        privacy.setObjectName("privacyPill")
+        privacy_layout = QHBoxLayout(privacy)
+        privacy_layout.setContentsMargins(11, 5, 12, 5)
+        privacy_layout.setSpacing(6)
+        privacy_dot = QLabel("●")
+        privacy_dot.setObjectName("privacyDot")
+        privacy_text = QLabel("100% 本地处理")
+        privacy_text.setObjectName("privacyText")
+        privacy_layout.addWidget(privacy_dot)
+        privacy_layout.addWidget(privacy_text)
+        top_layout.addWidget(privacy)
         version = QLabel(f"VERSION {APP_VERSION}")
         version.setObjectName("versionPill")
         top_layout.addWidget(version)
@@ -1361,52 +1895,48 @@ class MainWindow(QMainWindow):
 
         body = QWidget()
         body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(20, 18, 20, 20)
-        body_layout.setSpacing(18)
+        body_layout.setContentsMargins(22, 20, 22, 22)
+        body_layout.setSpacing(20)
         outer.addWidget(body, 1)
 
-        sidebar_scroll = QScrollArea()
+        sidebar_scroll = SmoothScrollArea()
+        sidebar_scroll.setObjectName("sidebarScroll")
         sidebar_scroll.setWidgetResizable(True)
         sidebar_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        sidebar_scroll.setFixedWidth(390)
+        sidebar_scroll.setFixedWidth(374)
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(4, 4, 8, 8)
-        sidebar_layout.setSpacing(11)
+        sidebar_layout.setContentsMargins(3, 3, 10, 10)
+        sidebar_layout.setSpacing(12)
         sidebar_scroll.setWidget(sidebar)
         body_layout.addWidget(sidebar_scroll)
 
         file_card = self._card()
-        add_shadow(file_card, 20, 4)
+        add_shadow(file_card, 24, 5)
         file_layout = QVBoxLayout(file_card)
-        file_layout.setContentsMargins(16, 14, 16, 14)
-        file_layout.setSpacing(9)
-        file_header = QHBoxLayout()
-        step = QLabel("01   PDF 文件")
-        step.setProperty("step", True)
-        file_header.addWidget(step)
-        file_header.addStretch(1)
-        self.file_button = QPushButton("选择文件")
+        file_layout.setContentsMargins(17, 15, 17, 16)
+        file_layout.setSpacing(11)
+        self.file_button = QPushButton("浏览…")
         self.file_button.clicked.connect(self.choose_input)
-        file_header.addWidget(self.file_button)
-        file_layout.addLayout(file_header)
-        self.input_info = QLabel("尚未选择 PDF 文件")
-        self.input_info.setProperty("secondary", True)
+        file_layout.addLayout(
+            self._step_header("01", "选择 PDF 文件", self.file_button)
+        )
+        self.input_info = QLabel("拖入文件，或点击右上角浏览")
+        self.input_info.setObjectName("fieldValue")
         self.input_info.setWordWrap(True)
         file_layout.addWidget(self.input_info)
         sidebar_layout.addWidget(file_card)
 
         target_card = self._card()
-        add_shadow(target_card, 20, 4)
+        add_shadow(target_card, 24, 5)
         target_layout = QVBoxLayout(target_card)
-        target_layout.setContentsMargins(16, 14, 16, 14)
-        target_layout.setSpacing(9)
-        target_step = QLabel("02   目标大小")
-        target_step.setProperty("step", True)
-        target_layout.addWidget(target_step)
+        target_layout.setContentsMargins(17, 15, 17, 16)
+        target_layout.setSpacing(10)
+        target_layout.addLayout(self._step_header("02", "设置目标大小"))
         target_row = QHBoxLayout()
+        target_row.setSpacing(9)
         self.target_edit = QLineEdit("5")
         self.target_edit.setPlaceholderText("输入目标大小")
         self.target_edit.textChanged.connect(self._target_changed)
@@ -1417,7 +1947,7 @@ class MainWindow(QMainWindow):
         target_row.addWidget(self.target_edit, 1)
         target_row.addWidget(self.unit_combo)
         target_layout.addLayout(target_row)
-        target_hint = QLabel("尽量贴近目标，并优先保证小字符和细线清晰。")
+        target_hint = QLabel("自动搜索最清晰且不超过目标的结果")
         target_hint.setProperty("secondary", True)
         target_hint.setWordWrap(True)
         target_layout.addWidget(target_hint)
@@ -1428,32 +1958,34 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(target_card)
 
         output_card = self._card()
-        add_shadow(output_card, 20, 4)
+        add_shadow(output_card, 24, 5)
         output_layout = QVBoxLayout(output_card)
-        output_layout.setContentsMargins(16, 14, 16, 14)
-        output_layout.setSpacing(9)
-        output_header = QHBoxLayout()
-        output_step = QLabel("03   保存位置")
-        output_step.setProperty("step", True)
-        output_header.addWidget(output_step)
-        output_header.addStretch(1)
-        self.output_button = QPushButton("更改位置")
+        output_layout.setContentsMargins(17, 15, 17, 16)
+        output_layout.setSpacing(11)
+        self.output_button = QPushButton("更改…")
         self.output_button.clicked.connect(self.choose_output)
-        output_header.addWidget(self.output_button)
-        output_layout.addLayout(output_header)
+        output_layout.addLayout(
+            self._step_header("03", "确认保存位置", self.output_button)
+        )
         self.output_info = QLabel("选择 PDF 后自动生成保存位置")
-        self.output_info.setProperty("secondary", True)
+        self.output_info.setObjectName("fieldValue")
         self.output_info.setWordWrap(True)
         output_layout.addWidget(self.output_info)
         sidebar_layout.addWidget(output_card)
 
         status_card = self._card()
+        add_shadow(status_card, 22, 4)
         status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(16, 14, 16, 14)
-        status_layout.setSpacing(9)
+        status_layout.setContentsMargins(17, 14, 17, 15)
+        status_layout.setSpacing(10)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(7)
+        self.status_indicator = StatusIndicator()
+        status_row.addWidget(self.status_indicator)
         self.status_label = QLabel("等待选择文件")
-        self.status_label.setStyleSheet("font-weight: 650;")
-        status_layout.addWidget(self.status_label)
+        self.status_label.setObjectName("statusLabel")
+        status_row.addWidget(self.status_label, 1)
+        status_layout.addLayout(status_row)
         self.progress_bar = AnimatedProgressBar()
         self.progress_bar.setRange(0, 100)
         status_layout.addWidget(self.progress_bar)
@@ -1463,28 +1995,35 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.result_label)
         sidebar_layout.addWidget(status_card)
 
-        self.start_button = QPushButton("开始智能压缩")
-        self.start_button.setObjectName("primaryButton")
+        self.start_button = PremiumButton("开始智能压缩   →")
         self.start_button.clicked.connect(self.start_compression)
+        self.start_button.setEnabled(False)
         sidebar_layout.addWidget(self.start_button)
         action_row = QHBoxLayout()
+        action_row.setSpacing(9)
         self.cancel_button = QPushButton("取消任务")
+        self.cancel_button.setProperty("quiet", True)
+        self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel_compression)
         self.open_button = QPushButton("打开输出文件夹")
+        self.open_button.setProperty("quiet", True)
+        self.open_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(self.open_output_folder)
         action_row.addWidget(self.cancel_button)
         action_row.addWidget(self.open_button)
         sidebar_layout.addLayout(action_row)
-        safety = QLabel("图内文字保持可搜索 · 未勾选内容保持原样")
-        safety.setProperty("secondary", True)
+        safety = QLabel("✓ 本地处理  ·  原 PDF 不变  ·  未勾选内容保持原样")
+        safety.setObjectName("safetyNote")
         safety.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        safety.setWordWrap(True)
         sidebar_layout.addWidget(safety)
         sidebar_layout.addStretch(1)
 
         preview_panel = self._card()
-        add_shadow(preview_panel, 24, 5)
+        preview_panel.setObjectName("previewPanel")
+        add_shadow(preview_panel, 30, 7)
         preview_layout = QVBoxLayout(preview_panel)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(0)
@@ -1492,35 +2031,53 @@ class MainWindow(QMainWindow):
 
         preview_header = QWidget()
         preview_header_layout = QVBoxLayout(preview_header)
-        preview_header_layout.setContentsMargins(18, 15, 18, 12)
-        preview_header_layout.setSpacing(9)
+        preview_header_layout.setContentsMargins(22, 17, 22, 14)
+        preview_header_layout.setSpacing(11)
         title_row = QHBoxLayout()
         preview_title_box = QVBoxLayout()
-        preview_title = QLabel("图形预览")
+        preview_title_box.setSpacing(2)
+        preview_title = QLabel("可视化选择")
         preview_title.setProperty("title", True)
-        preview_subtitle = QLabel("预览、选择并比较每个 Figure 的空间占用")
+        preview_subtitle = QLabel("预览完整 Figure，按占用决定哪些内容需要缩减")
         preview_subtitle.setProperty("secondary", True)
         preview_title_box.addWidget(preview_title)
         preview_title_box.addWidget(preview_subtitle)
         title_row.addLayout(preview_title_box)
         title_row.addStretch(1)
         self.preview_count = QLabel("尚未选择 PDF")
-        self.preview_count.setObjectName("versionPill")
+        self.preview_count.setObjectName("countPill")
         title_row.addWidget(self.preview_count)
         preview_header_layout.addLayout(title_row)
         controls = QHBoxLayout()
+        controls.setSpacing(10)
+        segmented = QFrame()
+        segmented.setObjectName("segmentedControl")
+        segment_layout = QHBoxLayout(segmented)
+        segment_layout.setContentsMargins(3, 3, 3, 3)
+        segment_layout.setSpacing(2)
         self.all_button = QPushButton("全选")
         self.none_button = QPushButton("全不选")
         self.figures_button = QPushButton("仅选 Figure")
+        for button in (
+            self.all_button,
+            self.none_button,
+            self.figures_button,
+        ):
+            button.setProperty("segment", True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.all_button.clicked.connect(lambda: self._set_selection(None, True))
         self.none_button.clicked.connect(lambda: self._set_selection(None, False))
         self.figures_button.clicked.connect(
             lambda: self._set_selection("figure", True)
         )
-        controls.addWidget(self.all_button)
-        controls.addWidget(self.none_button)
-        controls.addWidget(self.figures_button)
+        segment_layout.addWidget(self.all_button)
+        segment_layout.addWidget(self.none_button)
+        segment_layout.addWidget(self.figures_button)
+        controls.addWidget(segmented)
         controls.addStretch(1)
+        preview_tip = QLabel("点击缩略图可打开高清全景  ↗")
+        preview_tip.setProperty("secondary", True)
+        controls.addWidget(preview_tip)
         preview_header_layout.addLayout(controls)
         preview_layout.addWidget(preview_header)
 
@@ -1529,17 +2086,18 @@ class MainWindow(QMainWindow):
         divider.setStyleSheet(f"background: {BORDER};")
         preview_layout.addWidget(divider)
 
-        self.preview_scroll = QScrollArea()
+        self.preview_scroll = SmoothScrollArea()
         self.preview_scroll.setWidgetResizable(True)
         self.preview_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.preview_container = QWidget()
-        self.preview_container.setStyleSheet("background: #FAFAFC;")
+        self.preview_container.setObjectName("previewCanvas")
+        self.preview_container.setStyleSheet("background: #F7F8FB;")
         self.preview_grid = QGridLayout(self.preview_container)
-        self.preview_grid.setContentsMargins(12, 12, 12, 12)
-        self.preview_grid.setHorizontalSpacing(12)
-        self.preview_grid.setVerticalSpacing(12)
+        self.preview_grid.setContentsMargins(16, 16, 16, 18)
+        self.preview_grid.setHorizontalSpacing(14)
+        self.preview_grid.setVerticalSpacing(14)
         self.preview_grid.setColumnStretch(0, 1)
         self.preview_grid.setColumnStretch(1, 1)
         self.preview_scroll.setWidget(self.preview_container)
@@ -1552,20 +2110,41 @@ class MainWindow(QMainWindow):
         self._clear_preview_grid()
         holder = QWidget()
         layout = QVBoxLayout(holder)
-        layout.setContentsMargins(20, 90, 20, 90)
+        layout.setContentsMargins(26, 72, 26, 72)
         layout.addStretch(1)
+
+        empty = QFrame()
+        empty.setObjectName("emptyState")
+        empty.setMaximumWidth(480)
+        add_shadow(empty, 30, 8)
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.setContentsMargins(38, 30, 38, 32)
+        empty_layout.setSpacing(9)
         icon = QLabel()
-        icon.setPixmap(make_app_icon().pixmap(58, 58))
+        icon.setPixmap(make_app_icon().pixmap(72, 72))
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(icon)
+        empty_layout.addWidget(icon)
+        eyebrow = QLabel("LOCAL · PRIVATE · PRECISE")
+        eyebrow.setObjectName("emptyEyebrow")
+        eyebrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(eyebrow)
         title = QLabel(message)
+        title.setObjectName("emptyTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 14px; font-weight: 700;")
-        layout.addWidget(title)
-        hint = QLabel("也可以把 PDF 文件直接拖到窗口中")
+        empty_layout.addWidget(title)
+        hint = QLabel("选择目标大小，只降低你勾选的图片内容")
         hint.setProperty("secondary", True)
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(hint)
+        hint.setWordWrap(True)
+        empty_layout.addWidget(hint)
+        empty_layout.addSpacing(5)
+        drop_hint = QLabel("将 PDF 拖到窗口任意位置")
+        drop_hint.setObjectName("emptyDropPill")
+        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(
+            drop_hint, 0, Qt.AlignmentFlag.AlignHCenter
+        )
+        layout.addWidget(empty, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
         self.preview_grid.addWidget(holder, 0, 0, 1, 2)
 
@@ -1635,6 +2214,7 @@ class MainWindow(QMainWindow):
         self.selection_info.setText("正在识别完整 Figure，请稍候…")
         self.preview_count.setText("分析中…")
         self.status_label.setText("正在分析 PDF 图形结构…")
+        self.status_indicator.set_state("working")
         self.progress_bar.setValue(2)
         self._show_loading_state(path)
         self._set_asset_controls_enabled(False)
@@ -1730,7 +2310,7 @@ class MainWindow(QMainWindow):
             return
         self.assets_loading = False
         self.file_button.setEnabled(True)
-        self.file_button.setText("选择文件")
+        self.file_button.setText("浏览…")
         self.assets = []
         self.selected_asset_keys.clear()
         self.start_button.setEnabled(True)
@@ -1738,6 +2318,7 @@ class MainWindow(QMainWindow):
         self.preview_count.setText("读取失败")
         self._show_empty_state("无法读取 Figure 列表")
         self.status_label.setText("PDF 已选择，但 Figure 识别失败")
+        self.status_indicator.set_state("error")
         self.progress_bar.setValue(0)
 
     @Slot(int, object)
@@ -1746,7 +2327,7 @@ class MainWindow(QMainWindow):
             return
         self.assets_loading = False
         self.file_button.setEnabled(True)
-        self.file_button.setText("选择文件")
+        self.file_button.setText("浏览…")
         self.assets = []
         self.selected_asset_keys.clear()
         self.start_button.setEnabled(False)
@@ -1754,6 +2335,7 @@ class MainWindow(QMainWindow):
         self.preview_count.setText("已停止")
         self._show_empty_state("已停止读取这份 PDF")
         self.status_label.setText("PDF 读取已停止")
+        self.status_indicator.set_state("idle")
         self.progress_bar.setValue(0)
 
     def _populate_assets(
@@ -1797,7 +2379,7 @@ class MainWindow(QMainWindow):
             card.selection_changed.connect(self._asset_selection_changed)
             self.preview_grid.addWidget(card, index // 2, index % 2)
             self.asset_cards[asset.key] = card
-            self._fade_in(card, (index - start_index) * 28)
+            self._fade_in(card, (index - start_index) * 42)
         self.preview_count.setText(
             f"正在准备预览 · {end_index} / {len(assets)}"
         )
@@ -1834,12 +2416,13 @@ class MainWindow(QMainWindow):
         self._start_thumbnail_loading(path, assets)
         self.assets_loading = False
         self.file_button.setEnabled(True)
-        self.file_button.setText("选择文件")
+        self.file_button.setText("浏览…")
         self.start_button.setEnabled(True)
         self._update_selection_info()
         self.status_label.setText(
             f"已读完 {page_count} 页，选择图形后即可开始压缩"
         )
+        self.status_indicator.set_state("ready")
 
     def _start_thumbnail_loading(
         self, path: Path, assets: list[PDFAsset]
@@ -1865,7 +2448,7 @@ class MainWindow(QMainWindow):
         effect.setOpacity(0.0)
         widget.setGraphicsEffect(effect)
         animation = QPropertyAnimation(effect, b"opacity", widget)
-        animation.setDuration(260)
+        animation.setDuration(340)
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -2035,6 +2618,7 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.setValue(0)
         self.status_label.setText("正在准备压缩…")
+        self.status_indicator.set_state("working")
         self.result_label.clear()
         self.result_label.setStyleSheet("")
         self._set_busy(True)
@@ -2070,6 +2654,7 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self.progress_bar.set_smooth_value(100)
         self.status_label.setText("压缩完成")
+        self.status_indicator.set_state("success")
         self.last_output = result.output_path
         self.open_button.setEnabled(True)
         if result.method == "images":
@@ -2105,6 +2690,7 @@ class MainWindow(QMainWindow):
     def _compression_failed(self, message: str) -> None:
         self._set_busy(False)
         self.status_label.setText("处理失败")
+        self.status_indicator.set_state("error")
         self.result_label.setText(message)
         self.result_label.setStyleSheet(f"color: {ERROR}; font-weight: 650;")
         self._show_error(message)
@@ -2113,6 +2699,7 @@ class MainWindow(QMainWindow):
     def _compression_cancelled(self) -> None:
         self._set_busy(False)
         self.status_label.setText("任务已取消")
+        self.status_indicator.set_state("idle")
         self.result_label.setText("没有生成输出文件。")
 
     def cancel_compression(self) -> None:
