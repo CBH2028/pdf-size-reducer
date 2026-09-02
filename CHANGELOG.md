@@ -2,6 +2,13 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 未发布
+
+### 文档
+
+- 修复 README 的 Star 曲线只显示 GitHub API 限制提示、无法呈现数据的问题。
+- 改为读取 GitHub 官方 Stargazers API，并生成仓库内的自包含 SVG 曲线；同时提供可重复运行的更新脚本，避免依赖第三方图表服务。
+
 ## 3.3.1 - 2026-09-02
 
 ### 修复

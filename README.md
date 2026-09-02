@@ -162,11 +162,11 @@ All PDFs are processed locally. The app does not upload documents and contains n
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=CBH2028/pdf-size-reducer&type=Date)](https://www.star-history.com/#CBH2028/pdf-size-reducer&Date)
+[![GitHub Star History](docs/images/star-history.svg)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
 
 </div>
 
-The chart is generated online by Star History from public GitHub star data. Click it for details.
+This repository-hosted chart is generated from GitHub's official Stargazers API, avoiding third-party chart outages. Click it for the live stargazer list; maintainers can refresh it with `python tools/update_star_history.py`.
 
 ## Contributing
 
