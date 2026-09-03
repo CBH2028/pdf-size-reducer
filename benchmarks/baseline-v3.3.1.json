@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "label": "v3.3.1-before-performance-work",
+  "created_at_utc": "2026-09-02T07:24:00+00:00",
+  "environment": {
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900H",
+    "physical_cores": 14,
+    "logical_cpus": 20,
+    "memory_gib": 31.7,
+    "os": "Microsoft Windows 11 Pro build 26200",
+    "python": "3.12.10",
+    "pymupdf": "1.28.2",
+    "pillow": "12.3.0"
+  },
+  "fixtures": {
+    "source": {
+      "name": "Automatica.pdf",
+      "bytes": 6945763,
+      "pages": 15,
+      "sha256": "08D2F47CD2EDC1FD5198073F06D942CF3D820C34CABD0605A65B4437A5DA5B7C"
+    },
+    "ppt_reference": {
+      "name": "Automatica 压缩.pdf",
+      "bytes": 3245811,
+      "sha256": "27DD5F39B5931CB1A919581BE6D6BF48F4CA132B0702A9FF2AB6CC928706218C"
+    },
+    "stress": {
+      "name": "PDF_Size_Reducer_Stress_Demo_97.92MB.pdf",
+      "bytes": 102676547,
+      "pages": 48,
+      "sha256": "C0481F39FE607C42E66E30E36266FE8440CBBE518FCE38A48670CE9B1E851214"
+    }
+  },
+  "results": {
+    "automatica_ui": {
+      "assets_detected": 20,
+      "scan_seconds": 6.329,
+      "scan_and_thumbnails_seconds": 8.782,
+      "max_event_loop_gap_ms": 31.96,
+      "peak_working_set_mib": 98.83
+    },
+    "automatica_compression": {
+      "target_bytes": 3271557,
+      "output_bytes": 3271474,
+      "target_gap_bytes": 83,
+      "compression_seconds": 169.964,
+      "method": "images_vectors",
+      "images_processed": 1,
+      "figures_processed": 19,
+      "jpeg_quality": 84,
+      "vector_dpi": 595
+    },
+    "stress_ui": {
+      "assets_detected": 48,
+      "scan_seconds": 6.617,
+      "scan_and_thumbnails_seconds": 8.856,
+      "max_event_loop_gap_ms": 41.16,
+      "peak_working_set_mib": 113.11,
+      "ui_responsive": true
+    }
+  }
+}

@@ -14,13 +14,22 @@ import shutil
 import stat
 import tempfile
 import threading
-from collections import deque
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
 
 from PIL import Image, ImageChops, ImageDraw
+
+from native_worker import (
+    NativeRenderRequest,
+    NativeWorkerCancelled,
+    NativeWorkerError,
+    NativeWorkerSession,
+    find_native_worker,
+)
 
 try:
     import pymupdf as fitz
@@ -74,6 +83,13 @@ class CompressionResult:
     vector_pages_processed: int = 0
     figures_processed: int = 0
     vector_dpi: int | None = None
+    candidate_attempts: int = 0
+    render_cache_hits: int = 0
+    render_cache_misses: int = 0
+    native_worker_used: bool = False
+    native_render_batches: int = 0
+    native_render_tasks: int = 0
+    native_render_seconds: float = 0.0
 
     @property
     def saved_ratio(self) -> float:
@@ -113,6 +129,51 @@ class PDFAsset:
             return "当前占用未知"
         qualifier = "约 " if self.storage_is_estimate else ""
         return f"当前占用 {qualifier}{format_bytes(self.storage_bytes)}"
+
+
+class RenderCache:
+    """Bounded LRU cache for encoded Figure and vector-layer renders."""
+
+    def __init__(self, max_bytes: int = 256 * 1024**2) -> None:
+        self.max_bytes = max(0, max_bytes)
+        self.current_bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self._items: OrderedDict[
+            tuple[object, ...],
+            tuple[bytes, tuple[float, float, float, float]],
+        ] = OrderedDict()
+
+    def get(
+        self, key: tuple[object, ...]
+    ) -> tuple[bytes, fitz.Rect] | None:
+        cached = self._items.pop(key, None)
+        if cached is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        self._items[key] = cached
+        image_bytes, rectangle = cached
+        return image_bytes, fitz.Rect(rectangle)
+
+    def put(
+        self,
+        key: tuple[object, ...],
+        value: tuple[bytes, fitz.Rect],
+    ) -> None:
+        image_bytes, rectangle = value
+        size = len(image_bytes)
+        if not self.max_bytes or size > self.max_bytes:
+            return
+        previous = self._items.pop(key, None)
+        if previous is not None:
+            self.current_bytes -= len(previous[0])
+        stored = (image_bytes, tuple(rectangle))
+        self._items[key] = stored
+        self.current_bytes += size
+        while self.current_bytes > self.max_bytes and self._items:
+            _old_key, old_value = self._items.popitem(last=False)
+            self.current_bytes -= len(old_value[0])
 
 
 def format_bytes(size: int) -> str:
@@ -835,6 +896,47 @@ def _image_pixmap(
     return base
 
 
+def _pixmap_to_image(
+    pixmap: fitz.Pixmap, *, opaque: bool = True
+) -> Image.Image:
+    """Decode a MuPDF pixmap directly from its native sample buffer.
+
+    Older render paths encoded the pixmap as PNG and immediately asked Pillow
+    to decode that PNG again. Direct sample decoding removes both operations
+    while producing the same RGB / white-composited pixels.
+    """
+    if pixmap.colorspace and pixmap.colorspace.n not in (1, 3):
+        pixmap = fitz.Pixmap(fitz.csRGB, pixmap)
+
+    if pixmap.alpha:
+        mode = "LA" if pixmap.n == 2 else "RGBA"
+        # Lowercase ``a`` is Pillow's premultiplied-alpha mode. Converting it
+        # to straight alpha is implemented in native code and preserves the
+        # transparent edge colours that MuPDF's PNG encoder exposed before.
+        source_mode = "La" if pixmap.n == 2 else "RGBa"
+    else:
+        mode = "L" if pixmap.n == 1 else "RGB"
+        source_mode = mode
+    image = Image.frombytes(
+        source_mode,
+        (pixmap.width, pixmap.height),
+        pixmap.samples,
+        "raw",
+        source_mode,
+        pixmap.stride,
+        1,
+    )
+    if source_mode != mode:
+        image = image.convert(mode)
+    if pixmap.alpha and opaque:
+        foreground = image.convert("RGBA")
+        white = Image.new("RGBA", foreground.size, "white")
+        return Image.alpha_composite(white, foreground).convert("RGB")
+    if opaque and image.mode != "RGB":
+        return image.convert("RGB")
+    return image
+
+
 def _render_vector_layer(
     document: fitz.Document,
     page_number: int,
@@ -867,9 +969,12 @@ def _render_vector_layer(
 
         scale = dpi / 72.0
         pixmap = layer_page.get_pixmap(
-            matrix=fitz.Matrix(scale, scale), alpha=False, annots=False
+            matrix=fitz.Matrix(scale, scale),
+            colorspace=fitz.csRGB,
+            alpha=False,
+            annots=False,
         )
-        image = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
+        image = _pixmap_to_image(pixmap)
         white_background = Image.new("RGB", image.size, "white")
         content_box = ImageChops.difference(image, white_background).getbbox()
         if content_box is None:
@@ -921,10 +1026,11 @@ def _render_figure_region(
     pixmap = page.get_pixmap(
         matrix=fitz.Matrix(scale, scale),
         clip=clip,
+        colorspace=fitz.csRGB,
         alpha=False,
         annots=False,
     )
-    image = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
+    image = _pixmap_to_image(pixmap)
     buffer = BytesIO()
     image.save(
         buffer,
@@ -939,6 +1045,46 @@ def _render_figure_region(
     return buffer.getvalue(), clip
 
 
+def render_asset_image_from_document(
+    document: fitz.Document,
+    asset: PDFAsset,
+    dpi: int = 220,
+) -> bytes:
+    """Render one selectable asset using an already-open document."""
+    if asset.kind == "image":
+        if asset.xref is None:
+            raise CompressionError("图片对象缺少 xref。")
+        pixmap = _image_pixmap(document, asset.xref, asset.smask)
+        preview = _pixmap_to_image(pixmap)
+    elif asset.kind == "figure":
+        if asset.rect is None:
+            raise CompressionError("论文 Figure 缺少识别区域。")
+        page = document[asset.page_numbers[0]]
+        clip = fitz.Rect(asset.rect) & page.rect
+        if clip.is_empty:
+            raise CompressionError("论文 Figure 的识别区域无效。")
+        scale = max(72, min(300, dpi)) / 72.0
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(scale, scale),
+            clip=clip,
+            colorspace=fitz.csRGB,
+            alpha=False,
+            annots=False,
+        )
+        preview = _pixmap_to_image(pixmap)
+    else:
+        rendered = _render_vector_layer(
+            document, asset.page_numbers[0], dpi=dpi, jpeg_quality=90
+        )
+        if rendered is None:
+            raise CompressionError("此矢量绘图层没有可预览内容。")
+        preview = Image.open(BytesIO(rendered[0])).convert("RGB")
+
+    buffer = BytesIO()
+    preview.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
 def render_asset_image(
     input_path: str | Path,
     asset: PDFAsset,
@@ -946,106 +1092,52 @@ def render_asset_image(
 ) -> bytes:
     """Render one complete selectable asset as a full-resolution PNG."""
     with fitz.open(Path(input_path)) as document:
-        if asset.kind == "image":
-            if asset.xref is None:
-                raise CompressionError("图片对象缺少 xref。")
-            pixmap = _image_pixmap(document, asset.xref, asset.smask)
-            preview = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGBA")
-            white = Image.new("RGBA", preview.size, "white")
-            preview = Image.alpha_composite(white, preview).convert("RGB")
-        elif asset.kind == "figure":
-            if asset.rect is None:
-                raise CompressionError("论文 Figure 缺少识别区域。")
-            page = document[asset.page_numbers[0]]
-            clip = fitz.Rect(asset.rect) & page.rect
-            if clip.is_empty:
-                raise CompressionError("论文 Figure 的识别区域无效。")
-            scale = max(72, min(300, dpi)) / 72.0
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(scale, scale),
-                clip=clip,
-                alpha=False,
-                annots=False,
-            )
-            preview = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
-        else:
-            rendered = _render_vector_layer(
-                document, asset.page_numbers[0], dpi=dpi, jpeg_quality=90
-            )
-            if rendered is None:
-                raise CompressionError("此矢量绘图层没有可预览内容。")
-            preview = Image.open(BytesIO(rendered[0])).convert("RGB")
-
-    buffer = BytesIO()
-    preview.save(buffer, format="PNG", optimize=True)
-    return buffer.getvalue()
+        return render_asset_image_from_document(document, asset, dpi)
 
 
-def render_asset_thumbnail(
-    input_path: str | Path,
+def render_asset_thumbnail_from_document(
+    document: fitz.Document,
     asset: PDFAsset,
     size: tuple[int, int] = (210, 145),
 ) -> bytes:
-    """Render a fast, aspect-fitted overview for one selectable asset.
+    """Render a thumbnail while reusing an already-open PDF document.
 
     The main-grid preview is deliberately decoded directly from MuPDF pixels.
     Routing it through ``render_asset_image`` used to encode a large PNG only
     to decode and shrink it immediately, causing visible event-loop stalls on
     PDFs with dozens of Figures.
     """
-    with fitz.open(Path(input_path)) as document:
-        if asset.kind == "image":
-            if asset.xref is None:
-                raise CompressionError("图片对象缺少 xref。")
-            pixmap = _image_pixmap(document, asset.xref, asset.smask)
-            if pixmap.alpha and pixmap.n == 4:
-                foreground = Image.frombytes(
-                    "RGBA", (pixmap.width, pixmap.height), pixmap.samples
-                )
-                white = Image.new("RGBA", foreground.size, "white")
-                preview = Image.alpha_composite(white, foreground).convert("RGB")
-            elif pixmap.alpha and pixmap.n == 2:
-                foreground = Image.frombytes(
-                    "LA", (pixmap.width, pixmap.height), pixmap.samples
-                ).convert("RGBA")
-                white = Image.new("RGBA", foreground.size, "white")
-                preview = Image.alpha_composite(white, foreground).convert("RGB")
-            elif pixmap.n == 1:
-                preview = Image.frombytes(
-                    "L", (pixmap.width, pixmap.height), pixmap.samples
-                ).convert("RGB")
-            else:
-                preview = Image.frombytes(
-                    "RGB", (pixmap.width, pixmap.height), pixmap.samples
-                )
-        elif asset.kind == "figure":
-            if asset.rect is None:
-                raise CompressionError("论文 Figure 缺少识别区域。")
-            page = document[asset.page_numbers[0]]
-            clip = fitz.Rect(asset.rect) & page.rect
-            if clip.is_empty:
-                raise CompressionError("论文 Figure 的识别区域无效。")
-            fit_scale = min(size[0] / clip.width, size[1] / clip.height)
-            # One native PDF pixel per point is already around 2.5x the card
-            # resolution for a typical paper Figure and gives clean downsampling.
-            scale = max(1.0, min(1.7, fit_scale * 1.35))
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(scale, scale),
-                clip=clip,
-                colorspace=fitz.csRGB,
-                alpha=False,
-                annots=False,
-            )
-            preview = Image.frombytes(
-                "RGB", (pixmap.width, pixmap.height), pixmap.samples
-            )
-        else:
-            rendered = _render_vector_layer(
-                document, asset.page_numbers[0], dpi=90, jpeg_quality=88
-            )
-            if rendered is None:
-                raise CompressionError("此矢量绘图层没有可预览内容。")
-            preview = Image.open(BytesIO(rendered[0])).convert("RGB")
+    if asset.kind == "image":
+        if asset.xref is None:
+            raise CompressionError("图片对象缺少 xref。")
+        pixmap = _image_pixmap(document, asset.xref, asset.smask)
+        preview = _pixmap_to_image(pixmap)
+    elif asset.kind == "figure":
+        if asset.rect is None:
+            raise CompressionError("论文 Figure 缺少识别区域。")
+        page = document[asset.page_numbers[0]]
+        clip = fitz.Rect(asset.rect) & page.rect
+        if clip.is_empty:
+            raise CompressionError("论文 Figure 的识别区域无效。")
+        fit_scale = min(size[0] / clip.width, size[1] / clip.height)
+        # One native PDF pixel per point is already around 2.5x the card
+        # resolution for a typical paper Figure and gives clean downsampling.
+        scale = max(1.0, min(1.7, fit_scale * 1.35))
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(scale, scale),
+            clip=clip,
+            colorspace=fitz.csRGB,
+            alpha=False,
+            annots=False,
+        )
+        preview = _pixmap_to_image(pixmap)
+    else:
+        rendered = _render_vector_layer(
+            document, asset.page_numbers[0], dpi=90, jpeg_quality=88
+        )
+        if rendered is None:
+            raise CompressionError("此矢量绘图层没有可预览内容。")
+        preview = Image.open(BytesIO(rendered[0])).convert("RGB")
 
     preview.thumbnail(size, Image.Resampling.LANCZOS)
     canvas = Image.new("RGB", size, "white")
@@ -1063,16 +1155,57 @@ def render_asset_thumbnail(
     return buffer.getvalue()
 
 
+def render_asset_thumbnail(
+    input_path: str | Path,
+    asset: PDFAsset,
+    size: tuple[int, int] = (210, 145),
+) -> bytes:
+    """Render a fast, aspect-fitted overview for one selectable asset."""
+    with fitz.open(Path(input_path)) as document:
+        return render_asset_thumbnail_from_document(document, asset, size)
+
+
+def iter_asset_thumbnails(
+    input_path: str | Path,
+    indexed_assets: list[tuple[int, PDFAsset]],
+    size: tuple[int, int] = (210, 145),
+    cancel_event: threading.Event | None = None,
+):
+    """Yield thumbnail results while one worker keeps one PDF open.
+
+    The function intentionally returns errors per asset so one malformed image
+    cannot stop the remaining cards in that worker's partition.
+    """
+    with fitz.open(Path(input_path)) as document:
+        for index, asset in indexed_assets:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            try:
+                data = render_asset_thumbnail_from_document(
+                    document, asset, size
+                )
+            except Exception as exc:
+                yield index, None, str(exc)
+            else:
+                yield index, data, None
+
+
 def _replace_vector_layer(
     document: fitz.Document,
     page_number: int,
     dpi: int,
     jpeg_quality: int = 85,
+    render_cache: RenderCache | None = None,
 ) -> bool:
     """Replace one page's vector paths while keeping text and images intact."""
-    rendered = _render_vector_layer(
-        document, page_number, dpi, jpeg_quality
-    )
+    cache_key = ("vector", page_number, dpi, jpeg_quality)
+    rendered = render_cache.get(cache_key) if render_cache else None
+    if rendered is None:
+        rendered = _render_vector_layer(
+            document, page_number, dpi, jpeg_quality
+        )
+        if rendered is not None and render_cache is not None:
+            render_cache.put(cache_key, rendered)
     if rendered is None:
         return False
     image_bytes, target_rect = rendered
@@ -1095,6 +1228,8 @@ def _replace_figure_regions(
     dpi: int,
     jpeg_quality: int = 85,
     dpi_overrides: list[int] | None = None,
+    render_cache: RenderCache | None = None,
+    cache_variant: int = 0,
 ) -> int:
     """Compress complete Figures while preserving all native Figure text.
 
@@ -1107,57 +1242,174 @@ def _replace_figure_regions(
     if not rectangles:
         return 0
 
-    # Build a temporary copy containing the Figure graphics but no text. This
-    # prevents doubled / blurry glyphs when native text is retained on top.
-    graphics_document = fitz.open()
-    try:
-        graphics_document.insert_pdf(
-            document,
-            from_page=page_number,
-            to_page=page_number,
-            links=False,
-            annots=False,
+    render_dpis = (
+        dpi_overrides
+        if dpi_overrides is not None
+        and len(dpi_overrides) == len(rectangles)
+        else [dpi] * len(rectangles)
+    )
+    rendered: list[tuple[bytes, fitz.Rect] | None] = [None] * len(rectangles)
+    missing: list[tuple[int, tuple[object, ...]]] = []
+    for index, (rectangle, render_dpi) in enumerate(
+        zip(rectangles, render_dpis)
+    ):
+        rectangle_key = tuple(round(float(value), 3) for value in rectangle)
+        cache_key = (
+            "figure",
+            page_number,
+            rectangle_key,
+            render_dpi,
+            jpeg_quality,
+            cache_variant,
         )
-        graphics_page = graphics_document[0]
-        for rectangle in rectangles:
-            graphics_page.add_redact_annot(
-                fitz.Rect(rectangle), fill=None, cross_out=False
+        cached = render_cache.get(cache_key) if render_cache else None
+        if cached is None:
+            missing.append((index, cache_key))
+        else:
+            rendered[index] = cached
+
+    if missing:
+        # Build a temporary copy containing Figure graphics but no text only
+        # when at least one encoded region is absent from the cross-candidate
+        # cache. Native text remains sharp and searchable in the output PDF.
+        graphics_document = fitz.open()
+        try:
+            graphics_document.insert_pdf(
+                document,
+                from_page=page_number,
+                to_page=page_number,
+                links=False,
+                annots=False,
             )
-        graphics_page.apply_redactions(
-            images=fitz.PDF_REDACT_IMAGE_NONE,
-            graphics=fitz.PDF_REDACT_LINE_ART_NONE,
-            text=fitz.PDF_REDACT_TEXT_REMOVE,
-        )
-        render_dpis = (
-            dpi_overrides
-            if dpi_overrides is not None
-            and len(dpi_overrides) == len(rectangles)
-            else [dpi] * len(rectangles)
-        )
-        rendered = [
-            _render_figure_region(
-                graphics_document,
-                0,
-                rectangle,
-                render_dpi,
-                jpeg_quality,
+            graphics_page = graphics_document[0]
+            for rectangle in rectangles:
+                graphics_page.add_redact_annot(
+                    fitz.Rect(rectangle), fill=None, cross_out=False
+                )
+            graphics_page.apply_redactions(
+                images=fitz.PDF_REDACT_IMAGE_NONE,
+                graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                text=fitz.PDF_REDACT_TEXT_REMOVE,
             )
-            for rectangle, render_dpi in zip(rectangles, render_dpis)
-        ]
-    finally:
-        graphics_document.close()
+            for index, cache_key in missing:
+                item = _render_figure_region(
+                    graphics_document,
+                    0,
+                    rectangles[index],
+                    render_dpis[index],
+                    jpeg_quality,
+                )
+                rendered[index] = item
+                if render_cache is not None:
+                    render_cache.put(cache_key, item)
+        finally:
+            graphics_document.close()
+
+    completed = [item for item in rendered if item is not None]
 
     page = document[page_number]
-    for _image_bytes, rectangle in rendered:
+    for _image_bytes, rectangle in completed:
         page.add_redact_annot(rectangle, fill=None, cross_out=False)
     page.apply_redactions(
         images=fitz.PDF_REDACT_IMAGE_REMOVE,
         graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
         text=fitz.PDF_REDACT_TEXT_NONE,
     )
-    for image_bytes, rectangle in rendered:
+    for image_bytes, rectangle in completed:
         page.insert_image(rectangle, stream=image_bytes, overlay=False)
-    return len(rendered)
+    return len(completed)
+
+
+def _prefetch_native_figure_renders(
+    source_path: Path,
+    figure_regions: dict[int, list[tuple[float, float, float, float]]],
+    vector_dpi: int,
+    jpeg_quality: int,
+    boosted_figure_regions: set[tuple[int, int]],
+    excluded_pages: set[int],
+    render_cache: RenderCache,
+    work_directory: Path,
+    cancel_event: threading.Event | None,
+    native_stats: dict[str, float | int] | None,
+    native_session: NativeWorkerSession | None,
+    progress_callback: Callable[[int, int], None] | None,
+) -> bool:
+    """Fill the render cache concurrently with the optional C++ worker.
+
+    Standalone image xrefs are changed in the in-memory candidate before its
+    Figures are replaced. A page containing one of those images stays on the
+    Python path so the rendered Figure can never observe stale source pixels.
+    """
+    if native_session is None or (
+        native_stats is not None and native_stats.get("disabled")
+    ):
+        return False
+
+    requests: list[NativeRenderRequest] = []
+    request_keys: dict[
+        int, tuple[tuple[object, ...], tuple[float, float, float, float]]
+    ] = {}
+    request_id = 0
+    for page_number, rectangles in sorted(figure_regions.items()):
+        if page_number in excluded_pages:
+            continue
+        for region_number, rectangle in enumerate(rectangles):
+            render_dpi = vector_dpi + int(
+                (page_number, region_number) in boosted_figure_regions
+            )
+            rectangle_key = tuple(round(float(value), 3) for value in rectangle)
+            cache_key = (
+                "figure",
+                page_number,
+                rectangle_key,
+                render_dpi,
+                jpeg_quality,
+                0,
+            )
+            cached = render_cache.get(cache_key)
+            if cached is not None:
+                continue
+            request = NativeRenderRequest(
+                request_id,
+                page_number,
+                tuple(map(float, rectangle)),
+                render_dpi,
+                jpeg_quality,
+            )
+            requests.append(request)
+            request_keys[request_id] = (cache_key, tuple(map(float, rectangle)))
+            request_id += 1
+
+    if not requests:
+        return False
+
+    started = time.perf_counter()
+    try:
+        rendered = native_session.render(
+            requests,
+            work_directory,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
+        )
+    except NativeWorkerCancelled as exc:
+        raise CompressionCancelled("压缩已取消。") from exc
+    except NativeWorkerError:
+        # A missing or incompatible native binary must never make compression
+        # unavailable. The existing, fully tested Python/MuPDF path follows.
+        native_session.close(force=True)
+        if native_stats is not None:
+            native_stats["disabled"] = 1
+        return False
+
+    elapsed = time.perf_counter() - started
+    for item_id, image_bytes in rendered.items():
+        cache_key, rectangle = request_keys[item_id]
+        render_cache.put(cache_key, (image_bytes, fitz.Rect(rectangle)))
+    if native_stats is not None:
+        native_stats["batches"] = int(native_stats.get("batches", 0)) + 1
+        native_stats["tasks"] = int(native_stats.get("tasks", 0)) + len(requests)
+        native_stats["seconds"] = float(native_stats.get("seconds", 0.0)) + elapsed
+    return True
 
 
 def _compress_candidate(
@@ -1175,6 +1427,9 @@ def _compress_candidate(
     progress_callback: ProgressCallback | None,
     cancel_event: threading.Event | None,
     figure_dpi_boost_count: int = 0,
+    render_cache: RenderCache | None = None,
+    native_stats: dict[str, float | int] | None = None,
+    native_session: NativeWorkerSession | None = None,
 ) -> tuple[int, int, int]:
     """Create a candidate by replacing bitmap images and optionally vector paths."""
     output = fitz.open(source_path)
@@ -1252,6 +1507,40 @@ def _compress_candidate(
             )
 
         if include_vectors:
+            if figure_regions and render_cache is not None:
+                def native_progress(completed: int, total: int) -> None:
+                    overall = 5 + round(
+                        88
+                        * (
+                            (attempt - 1)
+                            + (image_count + completed) / work_count
+                        )
+                        / max_attempts
+                    )
+                    _notify(
+                        progress_callback,
+                        overall,
+                        "C++ 高速渲染 Figure："
+                        f"{completed}/{total}（{vector_dpi} DPI）",
+                    )
+
+                _prefetch_native_figure_renders(
+                    source_path,
+                    figure_regions,
+                    vector_dpi,
+                    jpeg_quality,
+                    boosted_figure_regions,
+                    {
+                        image_page
+                        for image_page, _smask in image_locations.values()
+                    },
+                    render_cache,
+                    destination.parent / f"{destination.stem}-native",
+                    cancel_event,
+                    native_stats,
+                    native_session,
+                    native_progress,
+                )
             figure_number = 0
             for page_number, rectangles in sorted(figure_regions.items()):
                 _check_cancel(cancel_event)
@@ -1270,6 +1559,15 @@ def _compress_candidate(
                             )
                             for region_number in range(len(rectangles))
                         ],
+                        render_cache=render_cache,
+                        cache_variant=(
+                            round(image_scale * 10_000)
+                            if any(
+                                image_page == page_number
+                                for image_page, _smask in image_locations.values()
+                            )
+                            else 0
+                        ),
                     )
                     processed_figures += replaced
                 except Exception:
@@ -1294,7 +1592,11 @@ def _compress_candidate(
                 _check_cancel(cancel_event)
                 try:
                     if _replace_vector_layer(
-                        output, page_number, vector_dpi, jpeg_quality
+                        output,
+                        page_number,
+                        vector_dpi,
+                        jpeg_quality,
+                        render_cache,
                     ):
                         processed_vector_pages += 1
                 except Exception:
@@ -1393,6 +1695,7 @@ def compress_pdf(
                 "copied",
             )
 
+        native_session: NativeWorkerSession | None = None
         try:
             source = fitz.open(source_path)
         except (RuntimeError, ValueError) as exc:
@@ -1479,6 +1782,19 @@ def compress_pdf(
             # quality jump, while still spending every useful byte on clarity.
             max_attempts = 36
             attempt = 0
+            render_cache = RenderCache()
+            native_stats: dict[str, float | int] = {
+                "batches": 0,
+                "tasks": 0,
+                "seconds": 0.0,
+                "disabled": 0,
+            }
+            if figure_regions and find_native_worker() is not None:
+                try:
+                    _notify(progress_callback, 4, "正在启动 C++ 高速压缩引擎…")
+                    native_session = NativeWorkerSession(source_path)
+                except NativeWorkerError:
+                    native_session = None
             candidates: dict[
                 tuple[bool, int], tuple[Path, int, int, int, int]
             ] = {}
@@ -1527,6 +1843,9 @@ def compress_pdf(
                         progress_callback,
                         cancel_event,
                         figure_dpi_boost_count,
+                        render_cache,
+                        native_stats,
+                        native_session,
                     )
                 )
                 result = (
@@ -1592,6 +1911,8 @@ def compress_pdf(
 
                 low = 0
                 high = QUALITY_STEPS
+                low_bound_size = low_size
+                high_bound_size = high_size
                 best: tuple[int, Path, int, int, int, int] = (
                     low,
                     low_path,
@@ -1606,7 +1927,24 @@ def compress_pdf(
                     # stopping after a few coarse probes. This prevents a PDF
                     # from jumping from (for example) 3.97 MB to 2.97 MB when
                     # the requested budget is 3.12 MB.
-                    middle = (low + high) // 2
+                    score_span = high - low
+                    size_span = high_bound_size - low_bound_size
+                    if size_span > 0:
+                        estimated = low + round(
+                            (target_bytes - low_bound_size)
+                            / size_span
+                            * score_span
+                        )
+                        # Keep interpolation robust when PDF size is only
+                        # approximately monotonic. Every probe removes at
+                        # least one eighth of the remaining score interval.
+                        guard = max(1, score_span // 8)
+                        middle = max(
+                            low + guard,
+                            min(high - guard, estimated),
+                        )
+                    else:
+                        middle = (low + high) // 2
                     (
                         middle_path,
                         middle_size,
@@ -1616,6 +1954,7 @@ def compress_pdf(
                     ) = render(middle, include_vectors)
                     if middle_size <= target_bytes:
                         low = middle
+                        low_bound_size = middle_size
                         best = (
                             middle,
                             middle_path,
@@ -1626,6 +1965,7 @@ def compress_pdf(
                         )
                     else:
                         high = middle
+                        high_bound_size = middle_size
 
                 feasible = [
                     (score, path, size, images, vectors, figures)
@@ -1998,6 +2338,15 @@ def compress_pdf(
                 best_vectors,
                 best_figures,
                 dpi,
+                attempt,
+                render_cache.hits,
+                render_cache.misses,
+                bool(native_stats["batches"]),
+                int(native_stats["batches"]),
+                int(native_stats["tasks"]),
+                float(native_stats["seconds"]),
             )
         finally:
+            if native_session is not None:
+                native_session.close()
             source.close()

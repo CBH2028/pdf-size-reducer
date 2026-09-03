@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+native_worker/bin/
+native_worker/*.obj
 *.spec
 test_*.pdf
 *.log

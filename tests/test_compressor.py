@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 
 import compressor
 from compressor import (
@@ -15,6 +15,17 @@ from compressor import (
     TargetTooSmallError,
     compress_pdf,
 )
+
+
+@pytest.fixture(autouse=True)
+def use_deterministic_python_engine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Keep legacy unit-size expectations independent of a local EXE build."""
+    monkeypatch.setenv("PDF_SIZE_REDUCER_DISABLE_NATIVE", "1")
+    compressor.find_native_worker.cache_clear()
+    yield
+    compressor.find_native_worker.cache_clear()
 
 
 def make_image_pdf(path: Path, pages: int = 3) -> None:
@@ -434,3 +445,87 @@ def test_figure_quality_profile_preserves_readable_resolution() -> None:
     assert compressor._quality_profile(0)[1] == 45
     assert compressor._quality_profile(100)[1] == 98
     assert compressor.QUALITY_STEPS == 400
+
+
+def test_direct_pixmap_decode_matches_png_reference() -> None:
+    document = fitz.open()
+    page = document.new_page(width=80, height=60)
+    page.draw_rect(
+        fitz.Rect(10, 10, 70, 50),
+        color=(0.1, 0.4, 0.8),
+        fill=(0.8, 0.2, 0.1),
+    )
+    pixmap = page.get_pixmap(colorspace=fitz.csRGB, alpha=True)
+    expected = Image.open(io.BytesIO(pixmap.tobytes("png"))).convert("RGBA")
+
+    direct = compressor._pixmap_to_image(pixmap, opaque=False)
+    expected_opaque = Image.alpha_composite(
+        Image.new("RGBA", expected.size, "white"), expected
+    ).convert("RGB")
+    direct_opaque = compressor._pixmap_to_image(pixmap)
+
+    assert direct.mode == "RGBA"
+    assert direct.size == expected.size
+    # MuPDF's PNG encoder and the direct integer unpremultiplication can
+    # disagree by one level before compositing. Their visible RGB result must
+    # remain identical, which is what previews and PDF replacement consume.
+    assert all(high <= 1 for _low, high in ImageChops.difference(direct, expected).getextrema())
+    assert direct_opaque.tobytes() == expected_opaque.tobytes()
+    document.close()
+
+
+def test_thumbnail_batch_opens_pdf_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "thumbnail-batch.pdf"
+    make_image_pdf(source, pages=3)
+    assets, _page_count = compressor.list_pdf_assets(source)
+    real_open = compressor.fitz.open
+    open_count = 0
+
+    def counting_open(*args: object, **kwargs: object):
+        nonlocal open_count
+        open_count += 1
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(compressor.fitz, "open", counting_open)
+    rendered = list(
+        compressor.iter_asset_thumbnails(source, list(enumerate(assets)))
+    )
+
+    assert open_count == 1
+    assert len(rendered) == len(assets)
+    assert all(data is not None and error is None for _index, data, error in rendered)
+
+
+def test_figure_render_cache_reuses_encoded_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "cache-source.pdf"
+    make_complete_figure_pdf(source)
+    figure = compressor.list_pdf_assets(source)[0][0]
+    assert figure.rect is not None
+    cache = compressor.RenderCache(max_bytes=8 * 1024**2)
+    real_render = compressor._render_figure_region
+    render_count = 0
+
+    def counting_render(*args: object, **kwargs: object):
+        nonlocal render_count
+        render_count += 1
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(compressor, "_render_figure_region", counting_render)
+    for _attempt in range(2):
+        with fitz.open(source) as document:
+            assert compressor._replace_figure_regions(
+                document,
+                0,
+                [figure.rect],
+                dpi=180,
+                jpeg_quality=82,
+                render_cache=cache,
+            ) == 1
+
+    assert render_count == 1
+    assert cache.hits == 1
+    assert cache.misses == 1

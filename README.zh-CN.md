@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-15%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-22%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -63,6 +63,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 | 黑底风险可规避 | 大多数透明 Figure 会转为白底 RGB；如复杂 PPT 矢量图仍出现黑底，可取消勾选该图并保持原样。 |
 | 商业级桌面界面 | 玻璃感顶栏、结构化流程卡、动态状态灯、渐变主操作、缩略图淡入、悬停光影、惯性平滑滚动和高 DPI 适配。 |
 | 始终可响应 | Figure 扫描与缩略图渲染使用隔离子进程，高清预览和压缩使用后台任务；大型科研图表不会锁死主窗口，并可随时停止读取。 |
+| C++ 高速 worker | 独立 C++17/MuPDF worker 使用长生命周期线程并行渲染 Figure；不可用时自动回退 Python 引擎。 |
 
 ## 快速开始
 
@@ -110,6 +111,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
+native_worker\build.bat
 ```
 
 运行可重复的大文件界面压力测试：
@@ -121,6 +123,8 @@ py -3 -m venv .venv
 ```
 
 该命令会临时生成约 98 MB 的合成科研 PDF，监测 Qt 事件循环、扫描、缩略图和内存指标，结束后自动删除测试文件。也可以用 `--pdf "D:\path\large.pdf"` 测试已有文件，或用 `--cancel-after-ms 500` 验证安全取消。
+
+使用 [`tools/benchmark_suite.py`](tools/benchmark_suite.py) 可运行完整的固定语料性能与画质基准。脚本在对比前会核对文件哈希，并记录定容误差、渲染缓存命中、内存、PSNR、边缘相似度、原生文字保留和黑背景回归。详见[基准说明](benchmarks/README.md)和[最新实测结果](benchmarks/RESULTS.md)。
 
 生成单文件 Windows 程序：
 
@@ -136,7 +140,11 @@ py -3 -m venv .venv
 pdf-size-reducer/
 ├── qt_app.py              # Qt 6 桌面界面与后台任务
 ├── compressor.py          # Figure 识别、渲染与精确定容引擎
+├── native_worker.py       # 版本协议、安全取消与自动回退桥接
+├── native_worker/         # 独立 C++17/MuPDF 高速 worker
 ├── tests/                 # 压缩与内容保真回归测试
+├── benchmarks/            # 固定基线、运行说明与实测结果
+├── tools/benchmark_suite.py # 性能、定容与画质基准
 ├── tools/stress_test.py   # 大型 PDF 生成与界面响应压力测试
 ├── tools/record_demo.py   # 驱动真实界面并安全录制操作演示
 ├── docs/media/            # README 动图与高清操作视频
@@ -145,7 +153,9 @@ pdf-size-reducer/
 └── CHANGELOG.md           # 完整修改日志
 ```
 
-PDF 渲染、像素缩放和 JPEG 编码由 MuPDF、Pillow 与 Qt 的原生 C/C++ 核心完成。Python 负责流程编排，因此把外层全部重写为 C++ 对总体处理时间帮助有限；更有效的优化方向是减少重复候选、复用渲染结果和并行处理独立图形。
+PDF 的界面、图形选择和结构保护继续由 Python 负责；最耗时的 Figure 渲染与 JPEG 编码交给独立 C++17/MuPDF worker。它在整次精确定容搜索中保持最多 8 个原生线程和 PDF 文档常驻，配合直接像素读取、有上限的渲染缓存和体积插值搜索，将固定 `Automatica.pdf → 3.12 MiB` 基准从 169.964 秒缩短到 33.074 秒，达到 **5.139 倍加速**。输出仅比目标小 156 字节，原生文字完全保留，对源文件 PSNR 为 39.862 dB，并通过黑背景检测。详见[实测基准](benchmarks/RESULTS.md)。
+
+C++ worker 是可选加速层：源码环境未构建或 worker 异常时会自动回退到原有 Python/MuPDF 引擎；Windows 打包版会自动内置。`build_exe.bat` 同时生成 `dist\PDF_Fast_Worker` 独立 worker 文件夹和可直接分发的 `dist\PDF_Fast_Worker_Windows_x64.zip`。
 
 ## 隐私
 

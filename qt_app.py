@@ -80,14 +80,15 @@ from compressor import (
     TargetTooSmallError,
     compress_pdf,
     format_bytes,
+    iter_asset_thumbnails,
     list_pdf_assets,
     render_asset_image,
-    render_asset_thumbnail,
 )
+from native_worker import find_native_worker
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.3.1"
+APP_VERSION = "3.4.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -1430,23 +1431,39 @@ class AssetScanWorker(QObject):
 
 def _thumbnail_process(
     path: str,
-    assets: list[PDFAsset],
+    indexed_assets: list[tuple[int, PDFAsset]],
+    worker_number: int,
     result_queue,
     cancel_event,
 ) -> None:
-    """Render card thumbnails outside the GUI process."""
-    for index, asset in enumerate(assets):
-        if cancel_event.is_set():
-            break
-        try:
-            data = render_asset_thumbnail(
-                Path(path), asset, size=(360, 190)
-            )
-        except Exception as exc:
+    """Render one partition while keeping a single PDF document open."""
+    try:
+        for index, data, error_message in iter_asset_thumbnails(
+            Path(path),
+            indexed_assets,
+            size=(360, 190),
+            cancel_event=cancel_event,
+        ):
+            if error_message is not None:
+                result_queue.put(("ready_error", index, error_message))
+            else:
+                result_queue.put(("ready", index, data))
+    except Exception as exc:
+        for index, _asset in indexed_assets:
             result_queue.put(("ready_error", index, str(exc)))
-        else:
-            result_queue.put(("ready", index, data))
-    result_queue.put(("done",))
+    finally:
+        result_queue.put(("worker_done", worker_number))
+
+
+def _thumbnail_worker_count(task_count: int) -> int:
+    """Return a conservative, bounded number of persistent render workers."""
+    if task_count <= 0:
+        return 0
+    configured = os.environ.get("PDF_SIZE_REDUCER_WORKERS", "").strip()
+    if configured.isdigit():
+        return max(1, min(task_count, 4, int(configured)))
+    cpu_count = os.cpu_count() or 2
+    return max(1, min(task_count, 4, max(2, cpu_count // 2)))
 
 
 class ThumbnailWorker(QObject):
@@ -1474,36 +1491,57 @@ class ThumbnailWorker(QObject):
         result_queue = context.Queue()
         process_cancel_event = context.Event()
         self._process_cancel_event = process_cancel_event
-        process = context.Process(
-            target=_thumbnail_process,
-            args=(
-                str(self.path),
-                self.assets,
-                result_queue,
-                process_cancel_event,
-            ),
-            name="PDFThumbnailRenderer",
-            daemon=True,
-        )
-        process.start()
+        worker_count = _thumbnail_worker_count(len(self.assets))
+        if worker_count == 0:
+            result_queue.close()
+            result_queue.join_thread()
+            self._process_cancel_event = None
+            self.done.emit(self.generation)
+            return
+        indexed_assets = list(enumerate(self.assets))
+        partitions = [
+            indexed_assets[worker_number::worker_count]
+            for worker_number in range(worker_count)
+        ]
+        processes = [
+            context.Process(
+                target=_thumbnail_process,
+                args=(
+                    str(self.path),
+                    partitions[worker_number],
+                    worker_number,
+                    result_queue,
+                    process_cancel_event,
+                ),
+                name=f"PDFThumbnailRenderer-{worker_number + 1}",
+                daemon=True,
+            )
+            for worker_number in range(worker_count)
+        ]
+        for process in processes:
+            process.start()
         terminal_received = False
         process_exited_at: float | None = None
         cancel_started: float | None = None
+        completed_items = 0
+        completed_workers: set[int] = set()
         try:
             while not terminal_received:
                 if self.cancel_event.is_set():
                     process_cancel_event.set()
                     if cancel_started is None:
                         cancel_started = time.monotonic()
-                    elif process.is_alive() and time.monotonic() - cancel_started > 1:
-                        process.terminate()
+                    elif time.monotonic() - cancel_started > 1:
+                        for process in processes:
+                            if process.is_alive():
+                                process.terminate()
                         self.done.emit(self.generation)
                         terminal_received = True
                         break
                 try:
                     message = result_queue.get(timeout=0.05)
                 except queue.Empty:
-                    if not process.is_alive():
+                    if not any(process.is_alive() for process in processes):
                         if process_exited_at is None:
                             process_exited_at = time.monotonic()
                         elif time.monotonic() - process_exited_at > 0.5:
@@ -1517,6 +1555,7 @@ class ThumbnailWorker(QObject):
                 if kind == "ready":
                     index, data = payload
                     self.ready.emit(self.generation, int(index), data)
+                    completed_items += 1
                 elif kind == "ready_error":
                     index, error_message = payload
                     self.ready.emit(
@@ -1524,16 +1563,23 @@ class ThumbnailWorker(QObject):
                         int(index),
                         RuntimeError(str(error_message)),
                     )
-                elif kind == "done":
+                    completed_items += 1
+                elif kind == "worker_done":
+                    completed_workers.add(int(payload[0]))
+                if (
+                    completed_items >= len(self.assets)
+                    or len(completed_workers) >= worker_count
+                ):
                     self.done.emit(self.generation)
                     terminal_received = True
         finally:
             process_cancel_event.set()
-            if process.is_alive():
-                process.join(timeout=1.0)
-            if process.is_alive():
-                process.terminate()
-            process.join(timeout=1.0)
+            for process in processes:
+                if process.is_alive():
+                    process.join(timeout=0.4)
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=0.6)
             result_queue.close()
             result_queue.join_thread()
             self._process_cancel_event = None
@@ -2704,6 +2750,8 @@ class MainWindow(QMainWindow):
             method = "原文件已满足目标"
         else:
             method = result.method
+        if result.native_worker_used:
+            method += " · C++ 高速引擎"
         self.result_label.setText(
             f"{format_bytes(result.original_bytes)}  →  "
             f"{format_bytes(result.output_bytes)}\n"
@@ -2769,6 +2817,8 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    if "--native-worker-self-test" in sys.argv:
+        raise SystemExit(0 if find_native_worker() is not None else 8)
     if sys.platform.startswith("win"):
         try:
             from ctypes import windll

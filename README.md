@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-15%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-22%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -69,6 +69,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Clarity first | High resolution and moderate JPEG compression are preferred to protect small characters and thin lines. |
 | Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
 | Responsive interface | Figure scanning and thumbnail rendering run in isolated processes. Large documents do not lock the main window and scanning can be stopped safely. |
+| Native high-speed worker | A persistent C++17/MuPDF worker renders independent Figures concurrently, automatically falling back to the Python engine if unavailable. |
 | Commercial-grade desktop UI | A glass-like header, structured workflow cards, animated status, a gradient primary action, progressive thumbnails, hover feedback, smooth scrolling, and high-DPI support. |
 
 ## Quick start
@@ -117,6 +118,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
+native_worker\build.bat
 ```
 
 Run the reproducible large-file UI stress test:
@@ -128,6 +130,13 @@ Run the reproducible large-file UI stress test:
 ```
 
 The command creates a temporary synthetic research-style PDF of about 98 MiB, monitors the Qt event loop, scanning, thumbnails, and memory, and removes the file afterward. Use `--pdf "D:\path\large.pdf"` to test an existing file or `--cancel-after-ms 500` to verify safe cancellation.
+
+Run the full fixed-corpus performance and quality benchmark with
+[`tools/benchmark_suite.py`](tools/benchmark_suite.py). It verifies fixture
+hashes before comparing results and records exact-size accuracy, render-cache
+hits, memory, PSNR, edge similarity, native-text preservation, and black-background
+regressions. See the [benchmark guide](benchmarks/README.md) and
+[latest measured results](benchmarks/RESULTS.md).
 
 Build the single-file Windows executable with:
 
@@ -143,7 +152,11 @@ The result is written to `dist\PDF_Size_Reducer.exe`.
 pdf-size-reducer/
 ├── qt_app.py              # Qt 6 desktop UI and background jobs
 ├── compressor.py          # Figure discovery, rendering, and targeting engine
+├── native_worker.py       # Versioned bridge, cancellation, and safe fallback
+├── native_worker/         # Standalone C++17/MuPDF high-speed worker
 ├── tests/                 # Compression and content-preservation regressions
+├── benchmarks/            # Fixed baseline, benchmark guide, and checked results
+├── tools/benchmark_suite.py # Performance, targeting, and quality benchmark
 ├── tools/stress_test.py   # Large-PDF generator and UI responsiveness test
 ├── tools/record_demo.py   # Reproducible, application-only demo recorder
 ├── docs/media/            # README animation and HD demo video
@@ -152,7 +165,9 @@ pdf-size-reducer/
 └── CHANGELOG.md           # Full change history
 ```
 
-MuPDF, Pillow, and Qt perform PDF rendering, pixel scaling, and JPEG encoding in native C/C++ code. Python coordinates the workflow, so rewriting only the outer application in C++ would provide limited improvement. Avoiding repeated candidates, reusing rendered data, and parallelizing independent figures are more valuable optimizations.
+MuPDF, Pillow, and Qt already perform low-level rendering, scaling, and JPEG work in native code, so the UI and PDF-selection logic remain in Python. The expensive Figure pipeline is different: a separate C++17 worker keeps up to eight native threads and MuPDF documents alive throughout the exact-size search. Together with direct pixel access, bounded render reuse, and interpolated quality search, the fixed `Automatica.pdf → 3.12 MiB` benchmark improved from 169.964 to 33.074 seconds—**5.139× faster**. The output remained 156 bytes below target, preserved native text exactly, scored 39.862 dB PSNR against the source, and passed the black-background gate. See [the measured benchmark](benchmarks/RESULTS.md).
+
+The native worker is optional. Source runs without a built worker use the tested Python/MuPDF fallback; packaged Windows builds include it automatically. `build_exe.bat` also produces a standalone folder in `dist\PDF_Fast_Worker` and a shareable `dist\PDF_Fast_Worker_Windows_x64.zip` bundle.
 
 ## Privacy
 
