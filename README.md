@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-22%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-26%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -69,7 +69,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Clarity first | High resolution and moderate JPEG compression are preferred to protect small characters and thin lines. |
 | Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
 | Responsive interface | Figure scanning and thumbnail rendering run in isolated processes. Large documents do not lock the main window and scanning can be stopped safely. |
-| Native high-speed worker | A persistent C++17/MuPDF worker renders independent Figures concurrently, automatically falling back to the Python engine if unavailable. |
+| Native high-speed planner | A C++17/MuPDF worker builds each Figure's complete quality ladder from one master rasterization; a global byte-budget planner then selects the clearest combination. |
 | Commercial-grade desktop UI | A glass-like header, structured workflow cards, animated status, a gradient primary action, progressive thumbnails, hover feedback, smooth scrolling, and high-DPI support. |
 
 ## Quick start
@@ -106,9 +106,9 @@ The source PDF is never overwritten. If the selected output path already exists,
 ![How PDF Size Reducer works](docs/images/workflow-en.svg)
 
 - Lossless structural optimization runs first. If it is enough, image quality is not changed.
-- Standalone bitmaps are re-encoded across candidate resolutions and JPEG quality levels.
-- Selected complete Figures are searched between 180 and 720 DPI, while recognizable text stays in an upper PDF text layer.
-- A 400-step quality scale, DPI search, and per-Figure tuning avoid large jumps such as only being able to produce 3.97 MB or 2.97 MB.
+- Standalone bitmaps are encoded into compact resolution and JPEG-quality ladders.
+- The C++ worker rasterizes each selected complete Figure once at 720 DPI, derives its lower-DPI variants from that master, and leaves recognizable text in an upper PDF text layer.
+- A global rate-distortion planner allocates the available bytes across all selected assets, then normally assembles only two complete candidate PDFs.
 - If the target would require going below the 180 DPI clarity floor, the app reports the smallest safe result instead of silently producing unreadable content.
 
 ## Development and testing
@@ -165,7 +165,7 @@ pdf-size-reducer/
 └── CHANGELOG.md           # Full change history
 ```
 
-MuPDF, Pillow, and Qt already perform low-level rendering, scaling, and JPEG work in native code, so the UI and PDF-selection logic remain in Python. The expensive Figure pipeline is different: a separate C++17 worker keeps up to eight native threads and MuPDF documents alive throughout the exact-size search. Together with direct pixel access, bounded render reuse, and interpolated quality search, the fixed `Automatica.pdf → 3.12 MiB` benchmark improved from 169.964 to 33.074 seconds—**5.139× faster**. The output remained 156 bytes below target, preserved native text exactly, scored 39.862 dB PSNR against the source, and passed the black-background gate. See [the measured benchmark](benchmarks/RESULTS.md).
+MuPDF, Pillow, and Qt already perform low-level work in native code, while Python retains PDF selection, safety, and fallback control. Protocol 2 of the C++17 worker now builds an entire Figure quality ladder from one high-resolution master; a global rate-distortion planner distributes the byte budget and avoids repeatedly rewriting the whole PDF. On the fixed `Automatica.pdf → 3.12 MiB` benchmark this reduced compression from 169.964 seconds in v3.3.1 and 33.074 seconds in v3.4.0 to **9.501 seconds**—**17.889× faster** than v3.3.1 and **3.481× faster** than v3.4.0. The output was 809 bytes below target, preserved native text exactly, scored 39.854 dB PSNR, and passed the black-background gate. See [the measured benchmark](benchmarks/RESULTS.md).
 
 The native worker is optional. Source runs without a built worker use the tested Python/MuPDF fallback; packaged Windows builds include it automatically. `build_exe.bat` also produces a standalone folder in `dist\PDF_Fast_Worker` and a shareable `dist\PDF_Fast_Worker_Windows_x64.zip` bundle.
 

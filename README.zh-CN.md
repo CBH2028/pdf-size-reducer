@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-22%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-26%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -63,7 +63,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 | 黑底风险可规避 | 大多数透明 Figure 会转为白底 RGB；如复杂 PPT 矢量图仍出现黑底，可取消勾选该图并保持原样。 |
 | 商业级桌面界面 | 玻璃感顶栏、结构化流程卡、动态状态灯、渐变主操作、缩略图淡入、悬停光影、惯性平滑滚动和高 DPI 适配。 |
 | 始终可响应 | Figure 扫描与缩略图渲染使用隔离子进程，高清预览和压缩使用后台任务；大型科研图表不会锁死主窗口，并可随时停止读取。 |
-| C++ 高速 worker | 独立 C++17/MuPDF worker 使用长生命周期线程并行渲染 Figure；不可用时自动回退 Python 引擎。 |
+| C++ 高速规划器 | C++17/MuPDF worker 从一次母版光栅化生成每张 Figure 的完整质量阶梯，再由全局预算规划器选择最清晰的组合。 |
 
 ## 快速开始
 
@@ -99,9 +99,9 @@ py -3 -m venv .venv
 ![PDF Size Reducer 工作原理](docs/images/workflow-zh-CN.svg)
 
 - 首先尝试无损结构优化；若已经达到目标，不改动图像质量。
-- 独立位图会按候选分辨率和 JPEG 质量重新编码。
-- 完整 Figure 的图形层会在 180–720 DPI 范围内搜索，可识别文字保留在上层。
-- 400 级质量刻度配合 DPI 与单图微调，减少“只能得到 3.97 MB 或 2.97 MB”这类大跨度跳档。
+- 独立位图会编码成紧凑的分辨率与 JPEG 质量阶梯。
+- C++ worker 以 720 DPI 对每张完整 Figure 只做一次母版光栅化，再从母版生成低 DPI 版本；可识别文字仍保留在上层。
+- 全局率失真规划器把可用字节分配给所有已选资源，通常只需装配两个完整候选 PDF。
 - 如果目标小到无法维持 180 DPI，程序会报告当前内容可实现的最小大小，而不是继续输出难以辨认的结果。
 
 ## 开发与测试
@@ -153,7 +153,7 @@ pdf-size-reducer/
 └── CHANGELOG.md           # 完整修改日志
 ```
 
-PDF 的界面、图形选择和结构保护继续由 Python 负责；最耗时的 Figure 渲染与 JPEG 编码交给独立 C++17/MuPDF worker。它在整次精确定容搜索中保持最多 8 个原生线程和 PDF 文档常驻，配合直接像素读取、有上限的渲染缓存和体积插值搜索，将固定 `Automatica.pdf → 3.12 MiB` 基准从 169.964 秒缩短到 33.074 秒，达到 **5.139 倍加速**。输出仅比目标小 156 字节，原生文字完全保留，对源文件 PSNR 为 39.862 dB，并通过黑背景检测。详见[实测基准](benchmarks/RESULTS.md)。
+PDF 的图形选择、结构保护、安全控制和回退逻辑继续由 Python 负责。C++17 worker 的协议 2 会从一次高分辨率母版生成整条 Figure 质量阶梯，全局率失真规划器随后统一分配字节预算，避免反复重写整个 PDF。固定 `Automatica.pdf → 3.12 MiB` 基准从 v3.3.1 的 169.964 秒、v3.4.0 的 33.074 秒进一步缩短到 **9.501 秒**，相比分别达到 **17.889 倍**和 **3.481 倍加速**。输出比目标小 809 字节，原生文字完全保留，对源文件 PSNR 为 39.854 dB，并通过黑背景检测。详见[实测基准](benchmarks/RESULTS.md)。
 
 C++ worker 是可选加速层：源码环境未构建或 worker 异常时会自动回退到原有 Python/MuPDF 引擎；Windows 打包版会自动内置。`build_exe.bat` 同时生成 `dist\PDF_Fast_Worker` 独立 worker 文件夹和可直接分发的 `dist\PDF_Fast_Worker_Windows_x64.zip`。
 

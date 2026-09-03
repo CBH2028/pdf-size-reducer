@@ -69,6 +69,10 @@ class TargetTooSmallError(CompressionError):
         )
 
 
+class PlannerUnavailable(RuntimeError):
+    """The one-shot planner could not safely handle this document."""
+
+
 @dataclass(frozen=True)
 class CompressionResult:
     input_path: Path
@@ -90,6 +94,9 @@ class CompressionResult:
     native_render_batches: int = 0
     native_render_tasks: int = 0
     native_render_seconds: float = 0.0
+    planned_mode: bool = False
+    native_master_renders: int = 0
+    planned_variants: int = 0
 
     @property
     def saved_ratio(self) -> float:
@@ -176,6 +183,40 @@ class RenderCache:
             self.current_bytes -= len(old_value[0])
 
 
+@dataclass(frozen=True)
+class PlannedVariant:
+    """One already-encoded quality choice for a planned asset."""
+
+    score: int
+    image_scale: float
+    jpeg_quality: int
+    dpi: int
+    payload: bytes
+
+
+@dataclass(frozen=True)
+class PlannedAsset:
+    """A bitmap or Figure with an ordered rate-distortion ladder."""
+
+    key: tuple[object, ...]
+    kind: str
+    page_number: int
+    variants: tuple[PlannedVariant, ...]
+    xref: int | None = None
+    rectangle: tuple[float, float, float, float] | None = None
+    visual_weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class PlannedStageResult:
+    path: Path
+    size: int
+    selection: tuple[int, ...]
+    attempts: int
+    images_processed: int
+    figures_processed: int
+
+
 def format_bytes(size: int) -> str:
     """Return a compact human-readable byte count."""
     if size < 1024:
@@ -211,6 +252,33 @@ def _vector_dpi(score: float) -> int:
     """Map quality to a readable 180..720 DPI Figure render."""
     score = max(0, min(100, score))
     return round(180 + (720 - 180) * score / 100)
+
+
+def _planner_profiles(step: int = 40) -> tuple[tuple[int, float, int, int], ...]:
+    """Return the shared quality ladder used by the one-shot planner."""
+    step = max(1, min(QUALITY_STEPS, step))
+    scores = list(range(0, QUALITY_STEPS + 1, step))
+    if scores[-1] != QUALITY_STEPS:
+        scores.append(QUALITY_STEPS)
+    profiles = []
+    for score in scores:
+        quality_score = score * 100 / QUALITY_STEPS
+        image_scale, jpeg_quality = _quality_profile(quality_score)
+        profiles.append(
+            (score, image_scale, jpeg_quality, _vector_dpi(quality_score))
+        )
+        if 200 <= score <= 280 and jpeg_quality < 100:
+            # A same-resolution +1 JPEG step gives the global allocator a
+            # cheap fine-grained option without another MuPDF render/scale.
+            profiles.append(
+                (
+                    min(QUALITY_STEPS - 1, score + step // 4),
+                    image_scale,
+                    jpeg_quality + 1,
+                    _vector_dpi(quality_score),
+                )
+            )
+    return tuple(profiles)
 
 
 def _save_lossless(source: fitz.Document, destination: Path) -> None:
@@ -1305,19 +1373,32 @@ def _replace_figure_regions(
         finally:
             graphics_document.close()
 
-    completed = [item for item in rendered if item is not None]
+    return _replace_figure_payloads(
+        document,
+        page_number,
+        [item for item in rendered if item is not None],
+    )
 
+
+def _replace_figure_payloads(
+    document: fitz.Document,
+    page_number: int,
+    payloads: list[tuple[bytes, fitz.Rect]],
+) -> int:
+    """Install pre-rendered Figure payloads with one redaction pass."""
+    if not payloads:
+        return 0
     page = document[page_number]
-    for _image_bytes, rectangle in completed:
+    for _image_bytes, rectangle in payloads:
         page.add_redact_annot(rectangle, fill=None, cross_out=False)
     page.apply_redactions(
         images=fitz.PDF_REDACT_IMAGE_REMOVE,
         graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
         text=fitz.PDF_REDACT_TEXT_NONE,
     )
-    for image_bytes, rectangle in completed:
+    for image_bytes, rectangle in payloads:
         page.insert_image(rectangle, stream=image_bytes, overlay=False)
-    return len(completed)
+    return len(payloads)
 
 
 def _prefetch_native_figure_renders(
@@ -1410,6 +1491,606 @@ def _prefetch_native_figure_renders(
         native_stats["tasks"] = int(native_stats.get("tasks", 0)) + len(requests)
         native_stats["seconds"] = float(native_stats.get("seconds", 0.0)) + elapsed
     return True
+
+
+def _prepare_planned_image_assets(
+    source_path: Path,
+    image_locations: dict[int, tuple[int, int]],
+    profiles: tuple[tuple[int, float, int, int], ...],
+    cancel_event: threading.Event | None,
+) -> list[PlannedAsset]:
+    """Encode a complete rate-distortion ladder for standalone images."""
+    assets: list[PlannedAsset] = []
+    with fitz.open(source_path) as document:
+        for xref, (page_number, smask) in sorted(image_locations.items()):
+            _check_cancel(cancel_event)
+            try:
+                base = _image_pixmap(document, xref, smask)
+                if (
+                    base.colorspace is None
+                    or base.width < 2
+                    or base.height < 2
+                ):
+                    raise PlannerUnavailable(
+                        f"Image xref {xref} has no usable pixel data."
+                    )
+                variants = []
+                for score, image_scale, jpeg_quality, dpi in profiles:
+                    width = max(1, round(base.width * image_scale))
+                    height = max(1, round(base.height * image_scale))
+                    pixmap = (
+                        base
+                        if width == base.width and height == base.height
+                        else fitz.Pixmap(base, width, height)
+                    )
+                    payload = (
+                        pixmap.tobytes("png")
+                        if pixmap.alpha
+                        else pixmap.tobytes(
+                            "jpg", jpg_quality=jpeg_quality
+                        )
+                    )
+                    variants.append(
+                        PlannedVariant(
+                            score,
+                            image_scale,
+                            jpeg_quality,
+                            dpi,
+                            payload,
+                        )
+                    )
+            except PlannerUnavailable:
+                raise
+            except Exception as exc:
+                raise PlannerUnavailable(
+                    f"Image xref {xref} could not be planned."
+                ) from exc
+            assets.append(
+                PlannedAsset(
+                    ("image", xref),
+                    "image",
+                    page_number,
+                    tuple(variants),
+                    xref=xref,
+                    visual_weight=max(1.0, float(base.width * base.height)),
+                )
+            )
+    return assets
+
+
+def _image_only_might_reach_target(
+    source_path: Path,
+    image_locations: dict[int, tuple[int, int]],
+    lossless_size: int,
+    target_bytes: int,
+) -> bool:
+    """Return False only when even deleting selected streams cannot suffice."""
+    if not image_locations:
+        return False
+    try:
+        removable_xrefs = set(image_locations)
+        removable_xrefs.update(
+            smask for _page, smask in image_locations.values() if smask > 0
+        )
+        with fitz.open(source_path) as document:
+            removable_bytes = sum(
+                len(document.xref_stream_raw(xref) or b"")
+                for xref in removable_xrefs
+            )
+    except Exception:
+        # An uncertain estimate must preserve the conservative image-only try.
+        return True
+    return lossless_size - removable_bytes <= target_bytes
+
+
+def _prepare_planned_figure_assets(
+    native_session: NativeWorkerSession,
+    figure_regions: dict[int, list[tuple[float, float, float, float]]],
+    profiles: tuple[tuple[int, float, int, int], ...],
+    work_directory: Path,
+    cancel_event: threading.Event | None,
+    progress_callback: ProgressCallback | None,
+    native_stats: dict[str, float | int],
+) -> list[PlannedAsset]:
+    """Render one master per Figure and encode its complete quality ladder."""
+    requests: list[NativeRenderRequest] = []
+    request_map: dict[int, tuple[int, int]] = {}
+    descriptors: list[
+        tuple[int, int, tuple[float, float, float, float]]
+    ] = []
+    request_id = 0
+    group_id = 0
+    for page_number, rectangles in sorted(figure_regions.items()):
+        for region_number, rectangle in enumerate(rectangles):
+            normalized = tuple(map(float, rectangle))
+            descriptors.append((page_number, region_number, normalized))
+            for variant_number, (
+                _score,
+                _image_scale,
+                jpeg_quality,
+                dpi,
+            ) in enumerate(profiles):
+                requests.append(
+                    NativeRenderRequest(
+                        request_id,
+                        page_number,
+                        normalized,
+                        dpi,
+                        jpeg_quality,
+                        group_id,
+                    )
+                )
+                request_map[request_id] = (group_id, variant_number)
+                request_id += 1
+            group_id += 1
+
+    if not requests:
+        return []
+
+    def native_progress(completed: int, total: int) -> None:
+        _notify(
+            progress_callback,
+            12 + round(33 * completed / max(1, total)),
+            f"正在建立 Figure 质量曲线：{completed}/{total}",
+        )
+
+    started = time.perf_counter()
+    try:
+        rendered = native_session.render_ladder(
+            requests,
+            work_directory,
+            cancel_event=cancel_event,
+            progress_callback=native_progress,
+        )
+    except NativeWorkerCancelled as exc:
+        raise CompressionCancelled("压缩已取消。") from exc
+    except NativeWorkerError as exc:
+        raise PlannerUnavailable("Native Figure planning failed.") from exc
+    elapsed = time.perf_counter() - started
+    if len(rendered) != len(requests):
+        raise PlannerUnavailable("Native Figure ladder is incomplete.")
+
+    grouped: list[list[bytes | None]] = [
+        [None] * len(profiles) for _descriptor in descriptors
+    ]
+    for item_id, payload in rendered.items():
+        asset_number, variant_number = request_map[item_id]
+        grouped[asset_number][variant_number] = payload
+
+    assets: list[PlannedAsset] = []
+    for asset_number, (page_number, region_number, rectangle) in enumerate(
+        descriptors
+    ):
+        payloads = grouped[asset_number]
+        if any(payload is None for payload in payloads):
+            raise PlannerUnavailable("Native Figure ladder is incomplete.")
+        variants = tuple(
+            PlannedVariant(
+                score,
+                image_scale,
+                jpeg_quality,
+                dpi,
+                payload if payload is not None else b"",
+            )
+            for (score, image_scale, jpeg_quality, dpi), payload in zip(
+                profiles, payloads
+            )
+        )
+        width = max(0.0, rectangle[2] - rectangle[0])
+        height = max(0.0, rectangle[3] - rectangle[1])
+        assets.append(
+            PlannedAsset(
+                ("figure", page_number, region_number),
+                "figure",
+                page_number,
+                variants,
+                rectangle=rectangle,
+                visual_weight=max(1.0, width * height),
+            )
+        )
+
+    response = native_session.last_response
+    native_stats["batches"] = int(native_stats.get("batches", 0)) + 1
+    native_stats["tasks"] = int(native_stats.get("tasks", 0)) + len(requests)
+    native_stats["seconds"] = float(native_stats.get("seconds", 0.0)) + elapsed
+    native_stats["master_renders"] = int(
+        native_stats.get("master_renders", 0)
+    ) + int(response.get("master_renders", len(descriptors)))
+    native_stats["variants"] = int(native_stats.get("variants", 0)) + len(
+        requests
+    )
+    return assets
+
+
+def _selection_stream_bytes(
+    assets: list[PlannedAsset], selection: tuple[int, ...]
+) -> int:
+    return sum(
+        len(asset.variants[index].payload)
+        for asset, index in zip(assets, selection)
+    )
+
+
+def _selection_utility(
+    assets: list[PlannedAsset], selection: tuple[int, ...]
+) -> float:
+    return sum(
+        asset.variants[index].score * asset.visual_weight
+        for asset, index in zip(assets, selection)
+    )
+
+
+def _plan_variant_selection(
+    assets: list[PlannedAsset], stream_budget: int
+) -> tuple[int, ...]:
+    """Solve a quality-fair multiple-choice byte allocation problem."""
+    if not assets:
+        return ()
+    common_levels = min(len(asset.variants) for asset in assets)
+    floor = 0
+    for level in range(1, common_levels):
+        level_bytes = sum(
+            len(asset.variants[level].payload) for asset in assets
+        )
+        if level_bytes <= stream_budget:
+            floor = level
+        else:
+            break
+
+    base_bytes = sum(
+        len(asset.variants[floor].payload) for asset in assets
+    )
+    extra_budget = max(0, stream_budget - base_bytes)
+    if not extra_budget:
+        return tuple(floor for _asset in assets)
+
+    # Cap the dynamic-programming table while conservatively rounding every
+    # payload increase upward. This guarantees the selected raw stream bytes
+    # remain inside the measured PDF budget.
+    quantum = max(1, (extra_budget + 24_999) // 25_000)
+    capacity = extra_budget // quantum
+    unavailable = float("-inf")
+    previous = [unavailable] * (capacity + 1)
+    previous[0] = 0.0
+    parents: list[list[int]] = []
+    choices: list[list[int]] = []
+
+    weights = sorted(asset.visual_weight for asset in assets)
+    median_weight = max(1.0, weights[len(weights) // 2])
+    for asset in assets:
+        next_scores = [unavailable] * (capacity + 1)
+        parent_row = [-1] * (capacity + 1)
+        choice_row = [-1] * (capacity + 1)
+        base_variant = asset.variants[floor]
+        area_weight = max(
+            0.5,
+            min(2.0, (asset.visual_weight / median_weight) ** 0.5),
+        )
+        options = []
+        for index in range(floor, len(asset.variants)):
+            variant = asset.variants[index]
+            added_bytes = max(
+                0, len(variant.payload) - len(base_variant.payload)
+            )
+            units = (added_bytes + quantum - 1) // quantum
+            # Diminishing returns keep small Figures from being starved while
+            # still assigning more bits to visually larger regions.
+            utility = area_weight * (max(0, variant.score - base_variant.score) ** 0.5)
+            options.append((units, utility, index))
+        for used, previous_score in enumerate(previous):
+            if previous_score == unavailable:
+                continue
+            for units, utility, index in options:
+                total = used + units
+                if total > capacity:
+                    continue
+                score = previous_score + utility
+                if score > next_scores[total]:
+                    next_scores[total] = score
+                    parent_row[total] = used
+                    choice_row[total] = index
+        previous = next_scores
+        parents.append(parent_row)
+        choices.append(choice_row)
+
+    final_cost = max(
+        range(capacity + 1),
+        key=lambda value: (previous[value], value),
+    )
+    selection = [floor] * len(assets)
+    cursor = final_cost
+    for asset_number in range(len(assets) - 1, -1, -1):
+        choice = choices[asset_number][cursor]
+        parent = parents[asset_number][cursor]
+        if choice < 0 or parent < 0:
+            return tuple(floor for _asset in assets)
+        selection[asset_number] = choice
+        cursor = parent
+    return tuple(selection)
+
+
+def _assemble_planned_candidate(
+    source_path: Path,
+    destination: Path,
+    assets: list[PlannedAsset],
+    selection: tuple[int, ...],
+    cancel_event: threading.Event | None,
+) -> tuple[int, int]:
+    """Apply a selected payload set and perform one complete PDF save."""
+    output = fitz.open(source_path)
+    images_processed = 0
+    figures_processed = 0
+    try:
+        figure_payloads: dict[int, list[tuple[bytes, fitz.Rect]]] = {}
+        for asset, variant_number in zip(assets, selection):
+            _check_cancel(cancel_event)
+            variant = asset.variants[variant_number]
+            if asset.kind == "image":
+                if asset.xref is None:
+                    raise PlannerUnavailable("A planned image has no xref.")
+                output[asset.page_number].replace_image(
+                    asset.xref, stream=variant.payload
+                )
+                images_processed += 1
+            elif asset.kind == "figure":
+                if asset.rectangle is None:
+                    raise PlannerUnavailable("A planned Figure has no region.")
+                figure_payloads.setdefault(asset.page_number, []).append(
+                    (variant.payload, fitz.Rect(asset.rectangle))
+                )
+        for page_number, payloads in sorted(figure_payloads.items()):
+            _check_cancel(cancel_event)
+            figures_processed += _replace_figure_payloads(
+                output, page_number, payloads
+            )
+        output.save(
+            destination,
+            garbage=4,
+            deflate=True,
+            deflate_images=True,
+            deflate_fonts=True,
+            use_objstms=1,
+        )
+    except CompressionCancelled:
+        raise
+    except PlannerUnavailable:
+        raise
+    except Exception as exc:
+        raise PlannerUnavailable("Planned PDF assembly failed.") from exc
+    finally:
+        output.close()
+    return images_processed, figures_processed
+
+
+def _run_planned_stage(
+    source_path: Path,
+    temp_dir: Path,
+    stage_name: str,
+    assets: list[PlannedAsset],
+    target_bytes: int,
+    attempt_offset: int,
+    progress_callback: ProgressCallback | None,
+    cancel_event: threading.Event | None,
+) -> tuple[PlannedStageResult | None, int, int]:
+    """Calibrate PDF overhead, plan variants, and assemble at most four times."""
+    attempts = 0
+    best: PlannedStageResult | None = None
+    seen: set[tuple[int, ...]] = set()
+
+    def evaluate(selection: tuple[int, ...]) -> PlannedStageResult:
+        nonlocal attempts
+        attempts += 1
+        _notify(
+            progress_callback,
+            min(94, 48 + (attempt_offset + attempts) * 8),
+            f"正在装配计划结果（第 {attempt_offset + attempts} 次）…",
+        )
+        candidate = temp_dir / (
+            f"planned_{stage_name}_{attempt_offset + attempts:02d}.pdf"
+        )
+        images, figures = _assemble_planned_candidate(
+            source_path, candidate, assets, selection, cancel_event
+        )
+        return PlannedStageResult(
+            candidate,
+            candidate.stat().st_size,
+            selection,
+            attempts,
+            images,
+            figures,
+        )
+
+    low_selection = tuple(0 for _asset in assets)
+    current = evaluate(low_selection)
+    minimum_size = current.size
+    seen.add(low_selection)
+    if current.size > target_bytes:
+        return None, minimum_size, attempts
+    best = current
+
+    safety_margin = max(512, target_bytes // 20_000)
+    for _correction in range(4):
+        _check_cancel(cancel_event)
+        current_stream_bytes = _selection_stream_bytes(
+            assets, current.selection
+        )
+        measured_overhead = current.size - current_stream_bytes
+        planned = _plan_variant_selection(
+            assets,
+            target_bytes - measured_overhead - safety_margin,
+        )
+        if planned in seen:
+            break
+        seen.add(planned)
+        current = evaluate(planned)
+        if current.size <= target_bytes and (
+            best is None
+            or _selection_utility(assets, current.selection)
+            > _selection_utility(assets, best.selection)
+            or (
+                _selection_utility(assets, current.selection)
+                == _selection_utility(assets, best.selection)
+                and current.size > best.size
+            )
+        ):
+            best = current
+
+    if best is None:
+        return None, minimum_size, attempts
+    return (
+        PlannedStageResult(
+            best.path,
+            best.size,
+            best.selection,
+            attempts,
+            best.images_processed,
+            best.figures_processed,
+        ),
+        minimum_size,
+        attempts,
+    )
+
+
+def _try_planned_compression(
+    source_path: Path,
+    destination: Path,
+    original_bytes: int,
+    lossless_size: int,
+    target_bytes: int,
+    image_locations: dict[int, tuple[int, int]],
+    vector_pages: list[int],
+    figure_regions: dict[int, list[tuple[float, float, float, float]]],
+    temp_dir: Path,
+    progress_callback: ProgressCallback | None,
+    cancel_event: threading.Event | None,
+    native_session: NativeWorkerSession | None,
+    native_stats: dict[str, float | int],
+) -> CompressionResult | None:
+    """Run the one-shot planner when every selected vector is a Figure."""
+    if native_session is None or vector_pages or not figure_regions:
+        return None
+
+    _notify(progress_callback, 6, "正在建立一次性压缩计划…")
+    profiles = _planner_profiles()
+    image_assets = _prepare_planned_image_assets(
+        source_path, image_locations, profiles, cancel_event
+    )
+    attempts = 0
+    minimum_sizes: list[int] = []
+
+    if image_assets and _image_only_might_reach_target(
+        source_path,
+        image_locations,
+        lossless_size,
+        target_bytes,
+    ):
+        image_result, minimum_size, used = _run_planned_stage(
+            source_path,
+            temp_dir,
+            "images",
+            image_assets,
+            target_bytes,
+            attempts,
+            progress_callback,
+            cancel_event,
+        )
+        attempts += used
+        minimum_sizes.append(minimum_size)
+        if image_result is not None:
+            selected_assets = image_assets
+            selected_result = image_result
+        else:
+            selected_assets = []
+            selected_result = None
+    else:
+        selected_assets = []
+        selected_result = None
+
+    if selected_result is None:
+        figure_assets = _prepare_planned_figure_assets(
+            native_session,
+            figure_regions,
+            profiles,
+            temp_dir / "planned-native-ladder",
+            cancel_event,
+            progress_callback,
+            native_stats,
+        )
+        expected_figures = sum(
+            len(rectangles) for rectangles in figure_regions.values()
+        )
+        if len(figure_assets) != expected_figures:
+            raise PlannerUnavailable("Not every Figure received a ladder.")
+        selected_assets = image_assets + figure_assets
+        selected_result, minimum_size, used = _run_planned_stage(
+            source_path,
+            temp_dir,
+            "combined",
+            selected_assets,
+            target_bytes,
+            attempts,
+            progress_callback,
+            cancel_event,
+        )
+        attempts += used
+        minimum_sizes.append(minimum_size)
+
+    if selected_result is None:
+        raise TargetTooSmallError(target_bytes, min(minimum_sizes))
+
+    _check_cancel(cancel_event)
+    _notify(progress_callback, 96, "正在写入一次性规划结果…")
+    _atomic_install(selected_result.path, destination)
+    final_size = destination.stat().st_size
+    if final_size > target_bytes:
+        raise PlannerUnavailable("Planned result exceeded the target.")
+
+    chosen = [
+        asset.variants[index]
+        for asset, index in zip(selected_assets, selected_result.selection)
+    ]
+    image_choices = [
+        variant
+        for asset, variant in zip(selected_assets, chosen)
+        if asset.kind == "image"
+    ]
+    figure_choices = [
+        variant
+        for asset, variant in zip(selected_assets, chosen)
+        if asset.kind == "figure"
+    ]
+    _notify(progress_callback, 100, "压缩完成。")
+    return CompressionResult(
+        source_path,
+        destination,
+        original_bytes,
+        final_size,
+        target_bytes,
+        (
+            "images_vectors"
+            if selected_result.images_processed
+            and selected_result.figures_processed
+            else "vectors"
+            if selected_result.figures_processed
+            else "images"
+        ),
+        max((variant.image_scale for variant in image_choices), default=None),
+        max((variant.jpeg_quality for variant in chosen), default=None),
+        selected_result.images_processed,
+        0,
+        selected_result.figures_processed,
+        max((variant.dpi for variant in figure_choices), default=None),
+        attempts,
+        0,
+        0,
+        bool(native_stats.get("batches")),
+        int(native_stats.get("batches", 0)),
+        int(native_stats.get("tasks", 0)),
+        float(native_stats.get("seconds", 0.0)),
+        True,
+        int(native_stats.get("master_renders", 0)),
+        int(native_stats.get("variants", 0)),
+    )
 
 
 def _compress_candidate(
@@ -1788,6 +2469,8 @@ def compress_pdf(
                 "tasks": 0,
                 "seconds": 0.0,
                 "disabled": 0,
+                "master_renders": 0,
+                "variants": 0,
             }
             if figure_regions and find_native_worker() is not None:
                 try:
@@ -1795,6 +2478,37 @@ def compress_pdf(
                     native_session = NativeWorkerSession(source_path)
                 except NativeWorkerError:
                     native_session = None
+
+            if (
+                os.environ.get("PDF_SIZE_REDUCER_DISABLE_PLANNER", "").strip()
+                != "1"
+            ):
+                try:
+                    planned_result = _try_planned_compression(
+                        source_path,
+                        destination,
+                        original_bytes,
+                        lossless_size,
+                        target_bytes,
+                        image_locations,
+                        vector_pages,
+                        figure_regions,
+                        temp_dir,
+                        progress_callback,
+                        cancel_event,
+                        native_session,
+                        native_stats,
+                    )
+                except PlannerUnavailable:
+                    planned_result = None
+                    if (
+                        native_session is not None
+                        and native_session.process.poll() is not None
+                    ):
+                        native_session = None
+                        native_stats["disabled"] = 1
+                if planned_result is not None:
+                    return planned_result
             candidates: dict[
                 tuple[bool, int], tuple[Path, int, int, int, int]
             ] = {}

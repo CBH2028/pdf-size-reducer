@@ -88,7 +88,7 @@ from native_worker import find_native_worker
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.5.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -2752,6 +2752,8 @@ class MainWindow(QMainWindow):
             method = result.method
         if result.native_worker_used:
             method += " · C++ 高速引擎"
+        if result.planned_mode:
+            method += " · 全局预算规划"
         self.result_label.setText(
             f"{format_bytes(result.original_bytes)}  →  "
             f"{format_bytes(result.output_bytes)}\n"

@@ -30,7 +30,7 @@ pdf_fast_worker render-batch --input input.pdf --manifest tasks.tsv --output-dir
 ```
 
 Manifest columns are `id`, zero-based page, `x0`, `y0`, `x1`, `y1`, DPI, JPEG
-quality, output filename, and a reserved field. Paths are passed separately and
+quality, output filename, and render-group ID. Paths are passed separately and
 may contain spaces or non-ASCII characters.
 
 The desktop application uses persistent server mode so the process, native
@@ -42,3 +42,7 @@ pdf_fast_worker serve --input input.pdf --threads 8
 
 Server commands are written to stdin as
 `BATCH<TAB>manifest<TAB>output-directory`; `QUIT` closes the worker cleanly.
+Protocol 2 also accepts `LADDER<TAB>manifest<TAB>output-directory`. All rows
+with the same group ID must describe one Figure region. The worker rasterizes
+that region once at the highest requested DPI, scales it once per lower DPI,
+and emits every requested JPEG-quality variant from those shared pixmaps.

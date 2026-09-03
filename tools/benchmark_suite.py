@@ -230,6 +230,9 @@ def run_compression_measurement(
             "native_render_batches": result.native_render_batches,
             "native_render_tasks": result.native_render_tasks,
             "native_render_seconds": round(result.native_render_seconds, 3),
+            "planned_mode": result.planned_mode,
+            "native_master_renders": result.native_master_renders,
+            "planned_variants": result.planned_variants,
             "output_sha256": sha256_file(destination),
         },
         assets,
@@ -391,6 +394,9 @@ def markdown_report(report: dict[str, Any]) -> str:
             f"| Output size | {compression['output_bytes']:,} B | — | "
             f"{compression['target_gap_bytes']:,} B below target |",
             f"| Candidate renders | {compression['candidate_attempts']} | — | — |",
+            f"| Global planner used | {compression['planned_mode']} | — | — |",
+            f"| Master rasterizations | {compression['native_master_renders']} | — | "
+            f"{compression['planned_variants']} encoded variants |",
             f"| Render-cache hits | {compression['render_cache_hits']} | 0 | — |",
             f"| C++ render time | {compression['native_render_seconds']:.3f} s | — | "
             f"{compression['native_render_tasks']} tasks |",

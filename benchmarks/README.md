@@ -17,10 +17,10 @@ Run the complete suite on Windows:
 ```
 
 The suite records scan time, thumbnail completion, UI responsiveness, exact
-target accuracy, compression attempts, render-cache efficiency, page and text
-preservation, PSNR, edge similarity, black-background regression, and native
-C++ render time/task counts. Reports are written to `build/benchmarks/` by
-default.
+target accuracy, compression attempts, planner activation, master
+rasterizations, encoded variants, page and text preservation, PSNR, edge
+similarity, black-background regression, and native C++ render time/task
+counts. Reports are written to `build/benchmarks/` by default.
 
 Before reporting a speedup, the suite verifies the source, PowerPoint
 reference, and stress-file hashes against the saved baseline. This prevents a

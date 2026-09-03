@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 ProgressCallback = Callable[[int, int], None]
 
 
@@ -34,6 +34,7 @@ class NativeRenderRequest:
     rectangle: tuple[float, float, float, float]
     dpi: int
     jpeg_quality: int
+    group_id: int = 0
 
 
 def _candidate_paths() -> list[Path]:
@@ -127,7 +128,7 @@ def _write_manifest(
                     str(request.dpi),
                     str(request.jpeg_quality),
                     filenames[request.id],
-                    "0",
+                    str(request.group_id),
                 )
             )
         )
@@ -171,6 +172,7 @@ class NativeWorkerSession:
         assert self.process.stdin is not None
         assert self.process.stdout is not None
         self.messages: queue.Queue[object] = queue.Queue()
+        self.last_response: dict[str, object] = {}
         self.reader = threading.Thread(
             target=_reader,
             args=(self.process.stdout, self.messages),
@@ -231,11 +233,12 @@ class NativeWorkerSession:
             if current_type == response_type:
                 return response
 
-    def render(
+    def _render_command(
         self,
         requests: list[NativeRenderRequest],
         work_directory: str | Path,
         *,
+        command: str,
         cancel_event: threading.Event | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> dict[int, bytes]:
@@ -251,7 +254,7 @@ class NativeWorkerSession:
         assert self.process.stdin is not None
         try:
             self.process.stdin.write(
-                f"BATCH\t{manifest}\t{directory}\n"
+                f"{command}\t{manifest}\t{directory}\n"
             )
             self.process.stdin.flush()
         except (BrokenPipeError, OSError) as exc:
@@ -262,6 +265,7 @@ class NativeWorkerSession:
             cancel_event=cancel_event,
             progress_callback=progress_callback,
         )
+        self.last_response = response
         if not response.get("ok"):
             raise NativeWorkerError(
                 "C++ worker failed: " + str(response.get("message", "no detail"))
@@ -276,6 +280,40 @@ class NativeWorkerSession:
                 )
             rendered[request.id] = output_path.read_bytes()
         return rendered
+
+    def render(
+        self,
+        requests: list[NativeRenderRequest],
+        work_directory: str | Path,
+        *,
+        cancel_event: threading.Event | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[int, bytes]:
+        """Render independent requests at their requested DPI and quality."""
+        return self._render_command(
+            requests,
+            work_directory,
+            command="BATCH",
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
+        )
+
+    def render_ladder(
+        self,
+        requests: list[NativeRenderRequest],
+        work_directory: str | Path,
+        *,
+        cancel_event: threading.Event | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[int, bytes]:
+        """Render one master per group and encode every requested variant."""
+        return self._render_command(
+            requests,
+            work_directory,
+            command="LADDER",
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
+        )
 
     def close(self, *, force: bool = False) -> None:
         if not hasattr(self, "process") or self.process.poll() is not None:

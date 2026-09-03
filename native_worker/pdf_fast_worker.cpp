@@ -8,11 +8,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <memory>
 #include <sstream>
@@ -25,7 +27,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kProtocolVersion = 1;
+constexpr int kProtocolVersion = 2;
 constexpr int kMaximumThreads = 12;
 
 struct RenderTask {
@@ -38,6 +40,7 @@ struct RenderTask {
     int dpi = 180;
     int quality = 85;
     std::string filename;
+    int group = 0;
 };
 
 std::string utf8(const std::wstring& value) {
@@ -122,7 +125,7 @@ std::vector<RenderTask> read_manifest(const fs::path& path) {
         task.dpi = std::clamp(std::stoi(fields[6]), 24, 1200);
         task.quality = std::clamp(std::stoi(fields[7]), 35, 100);
         task.filename = fields[8];
-        // Field 9 is reserved for future protocol-compatible options.
+        task.group = std::stoi(fields[9]);
         if (task.page < 0 || task.x1 <= task.x0 || task.y1 <= task.y0 ||
             task.filename.empty() || task.filename.find_first_of("/\\") != std::string::npos) {
             throw std::runtime_error(
@@ -134,12 +137,20 @@ std::vector<RenderTask> read_manifest(const fs::path& path) {
     return tasks;
 }
 
-void render_task(
-    const mupdf::FzDocument& document,
+bool same_region(const RenderTask& left, const RenderTask& right) {
+    constexpr float tolerance = 0.001F;
+    return left.page == right.page &&
+           std::abs(left.x0 - right.x0) <= tolerance &&
+           std::abs(left.y0 - right.y0) <= tolerance &&
+           std::abs(left.x1 - right.x1) <= tolerance &&
+           std::abs(left.y1 - right.y1) <= tolerance;
+}
+
+mupdf::FzPixmap render_master(
+    const mupdf::FzDisplayList& display_list,
     const RenderTask& task,
-    const fs::path& output_directory) {
-    const float scale = static_cast<float>(task.dpi) / 72.0F;
-    mupdf::FzPage page = document.fz_load_page(task.page);
+    int dpi) {
+    const float scale = static_cast<float>(dpi) / 72.0F;
     mupdf::FzMatrix matrix = mupdf::FzMatrix::fz_scale(scale, scale);
     mupdf::FzRect clip(task.x0, task.y0, task.x1, task.y1);
     mupdf::FzRect transformed(clip, matrix);
@@ -161,12 +172,87 @@ void render_task(
     std::vector<fz_rect> cull_rectangles{*transformed.internal()};
     mupdf::FzDevice without_text(draw, cull_rectangles);
     mupdf::FzCookie cookie;
-    page.fz_run_page_contents(without_text, matrix, cookie);
+    display_list.fz_run_display_list(
+        without_text, matrix, transformed, cookie);
     without_text.fz_close_device();
 
+    return pixmap;
+}
+
+mupdf::FzPixmap scale_master(
+    const mupdf::FzPixmap& master,
+    int master_dpi,
+    int target_dpi) {
+    if (target_dpi == master_dpi) {
+        return master;
+    }
+    const float ratio = static_cast<float>(target_dpi) /
+                        static_cast<float>(master_dpi);
+    const int width = std::max(
+        1, static_cast<int>(std::lround(master.fz_pixmap_width() * ratio)));
+    const int height = std::max(
+        1, static_cast<int>(std::lround(master.fz_pixmap_height() * ratio)));
+    mupdf::FzIrect scaled_bounds(0, 0, width, height);
+    mupdf::FzPixmap output = master.fz_scale_pixmap(
+        0.0F, 0.0F, static_cast<float>(width),
+        static_cast<float>(height), scaled_bounds);
+    if (!output) {
+        throw std::runtime_error("MuPDF could not scale a Figure master.");
+    }
+    return output;
+}
+
+void save_variant(
+    const mupdf::FzPixmap& pixmap,
+    const RenderTask& task,
+    const fs::path& output_directory) {
     const fs::path output_path = output_directory / fs::u8path(task.filename);
     const std::string output_utf8 = utf8(output_path.wstring());
     pixmap.fz_save_pixmap_as_jpeg(output_utf8.c_str(), task.quality);
+}
+
+void render_group(
+    const mupdf::FzDocument& document,
+    std::map<int, mupdf::FzDisplayList>& display_lists,
+    const std::vector<RenderTask>& tasks,
+    const fs::path& output_directory) {
+    if (tasks.empty()) {
+        return;
+    }
+    const RenderTask& first = tasks.front();
+    for (const auto& task : tasks) {
+        if (!same_region(first, task)) {
+            throw std::runtime_error(
+                "A render ladder group contains different Figure regions.");
+        }
+    }
+    auto display = display_lists.find(first.page);
+    if (display == display_lists.end()) {
+        mupdf::FzPage page = document.fz_load_page(first.page);
+        display = display_lists.emplace(
+            first.page,
+            mupdf::FzDisplayList::fz_new_display_list_from_page_contents(page)
+        ).first;
+    }
+    const auto master_task = std::max_element(
+        tasks.begin(), tasks.end(),
+        [](const RenderTask& left, const RenderTask& right) {
+            return left.dpi < right.dpi;
+        });
+    const int master_dpi = master_task->dpi;
+    mupdf::FzPixmap master = render_master(
+        display->second, first, master_dpi);
+    std::map<int, mupdf::FzPixmap> scaled_pixmaps;
+    scaled_pixmaps.emplace(master_dpi, master);
+    for (const auto& task : tasks) {
+        auto scaled = scaled_pixmaps.find(task.dpi);
+        if (scaled == scaled_pixmaps.end()) {
+            scaled = scaled_pixmaps.emplace(
+                task.dpi, scale_master(master, master_dpi, task.dpi)
+            ).first;
+        }
+        save_variant(scaled->second, task, output_directory);
+    }
 }
 
 class RenderPool {
@@ -199,15 +285,37 @@ public:
 
     int run_batch(
         const fs::path& manifest_path,
-        const fs::path& output_directory) {
+        const fs::path& output_directory,
+        bool ladder_mode = false) {
         auto tasks = read_manifest(manifest_path);
+        std::vector<std::vector<RenderTask>> groups;
+        if (ladder_mode) {
+            std::map<int, std::vector<RenderTask>> grouped;
+            for (auto& task : tasks) {
+                grouped[task.group].push_back(std::move(task));
+            }
+            groups.reserve(grouped.size());
+            for (auto& [group_id, variants] : grouped) {
+                static_cast<void>(group_id);
+                groups.push_back(std::move(variants));
+            }
+        } else {
+            groups.reserve(tasks.size());
+            for (auto& task : tasks) {
+                groups.push_back({std::move(task)});
+            }
+        }
         fs::create_directories(output_directory);
         const auto started = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            tasks_ = std::move(tasks);
+            groups_ = std::move(groups);
+            total_variants_ = 0;
+            for (const auto& group : groups_) {
+                total_variants_ += group.size();
+            }
             output_directory_ = output_directory;
-            next_task_.store(0);
+            next_group_.store(0);
             completed_.store(0);
             failed_.store(false);
             first_error_.clear();
@@ -233,7 +341,9 @@ public:
         }
         std::cout << "{\"type\":\"result\",\"ok\":true,\"completed\":"
                   << completed_.load() << ",\"elapsed_ms\":"
-                  << elapsed.count() << "}" << std::endl;
+                  << elapsed.count() << ",\"master_renders\":"
+                  << groups_.size() << ",\"variants\":"
+                  << total_variants_ << "}" << std::endl;
         return 0;
     }
 
@@ -248,6 +358,7 @@ private:
 
     void worker_loop(int worker_number) {
         std::unique_ptr<mupdf::FzDocument> document;
+        std::map<int, mupdf::FzDisplayList> display_lists;
         std::string startup_error;
         try {
             document = std::make_unique<mupdf::FzDocument>(input_utf8_.c_str());
@@ -272,29 +383,32 @@ private:
                 fail(startup_error);
             } else {
                 while (!failed_.load(std::memory_order_relaxed)) {
-                    const size_t index = next_task_.fetch_add(1);
-                    if (index >= tasks_.size()) {
+                    const size_t index = next_group_.fetch_add(1);
+                    if (index >= groups_.size()) {
                         break;
                     }
-                    const RenderTask task = tasks_[index];
+                    const std::vector<RenderTask> tasks = groups_[index];
                     try {
-                        render_task(*document, task, output_directory_);
-                        const auto output_path =
-                            output_directory_ / fs::u8path(task.filename);
-                        const auto bytes = fs::file_size(output_path);
-                        const int done = completed_.fetch_add(1) + 1;
-                        std::lock_guard<std::mutex> lock(output_mutex_);
-                        std::cout << "{\"type\":\"progress\",\"id\":"
-                                  << task.id << ",\"completed\":" << done
-                                  << ",\"total\":" << tasks_.size()
-                                  << ",\"bytes\":" << bytes
-                                  << ",\"worker\":" << worker_number
-                                  << "}" << std::endl;
+                        render_group(
+                            *document, display_lists, tasks, output_directory_);
+                        for (const auto& task : tasks) {
+                            const auto output_path =
+                                output_directory_ / fs::u8path(task.filename);
+                            const auto bytes = fs::file_size(output_path);
+                            const int done = completed_.fetch_add(1) + 1;
+                            std::lock_guard<std::mutex> lock(output_mutex_);
+                            std::cout << "{\"type\":\"progress\",\"id\":"
+                                      << task.id << ",\"completed\":" << done
+                                      << ",\"total\":" << total_variants_
+                                      << ",\"bytes\":" << bytes
+                                      << ",\"worker\":" << worker_number
+                                      << "}" << std::endl;
+                        }
                     } catch (const std::exception& error) {
                         fail(error.what());
                         std::lock_guard<std::mutex> lock(output_mutex_);
                         std::cout << "{\"type\":\"task_error\",\"id\":"
-                                  << task.id << ",\"message\":\""
+                                  << tasks.front().id << ",\"message\":\""
                                   << json_escape(error.what()) << "\"}"
                                   << std::endl;
                     }
@@ -318,9 +432,10 @@ private:
     std::mutex output_mutex_;
     std::condition_variable start_condition_;
     std::condition_variable finish_condition_;
-    std::vector<RenderTask> tasks_;
+    std::vector<std::vector<RenderTask>> groups_;
+    size_t total_variants_ = 0;
     fs::path output_directory_;
-    std::atomic<size_t> next_task_{0};
+    std::atomic<size_t> next_group_{0};
     std::atomic<int> completed_{0};
     std::atomic<bool> failed_{false};
     bool stopping_ = false;
@@ -340,13 +455,16 @@ int serve(const fs::path& input_path, int requested_threads) {
             return 0;
         }
         const auto fields = split_tabs(line);
-        if (fields.size() != 3 || fields[0] != "BATCH") {
+        if (fields.size() != 3 ||
+            (fields[0] != "BATCH" && fields[0] != "LADDER")) {
             std::cout << "{\"type\":\"result\",\"ok\":false,"
                          "\"completed\":0,\"message\":\"Invalid server command.\"}"
                       << std::endl;
             continue;
         }
-        pool.run_batch(fs::u8path(fields[1]), fs::u8path(fields[2]));
+        pool.run_batch(
+            fs::u8path(fields[1]), fs::u8path(fields[2]),
+            fields[0] == "LADDER");
     }
     return 0;
 }
