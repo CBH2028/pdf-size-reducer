@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-26%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-33%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -64,12 +64,14 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 | 商业级桌面界面 | 玻璃感顶栏、结构化流程卡、动态状态灯、渐变主操作、缩略图淡入、悬停光影、惯性平滑滚动和高 DPI 适配。 |
 | 始终可响应 | Figure 扫描与缩略图渲染使用隔离子进程，高清预览和压缩使用后台任务；大型科研图表不会锁死主窗口，并可随时停止读取。 |
 | C++ 高速规划器 | C++17/MuPDF worker 从一次母版光栅化生成每张 Figure 的完整质量阶梯，再由全局预算规划器选择最清晰的组合。 |
+| 加固的原生边界 | Rust 守卫以内存安全的方式解析请求，核验原生后端和 DLL，将任务限制在私有工作区，并施加 Windows 进程与内存限制。 |
 
 ## 快速开始
 
 ### 方式一：下载免安装版
 
 前往 [Releases](https://github.com/CBH2028/pdf-size-reducer/releases/latest) 下载 `PDF_Size_Reducer.exe`，双击即可运行，无需安装 Python。
+v3.6 及后续版本还会提供 `SHA256SUMS.txt`，用于核对下载文件完整性。
 
 ### 方式二：从源码运行
 
@@ -111,6 +113,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
+# 需要通过 rustup 安装 stable Rust，并安装 Visual Studio 2022 C++ Build Tools。
 native_worker\build.bat
 ```
 
@@ -141,7 +144,8 @@ pdf-size-reducer/
 ├── qt_app.py              # Qt 6 桌面界面与后台任务
 ├── compressor.py          # Figure 识别、渲染与精确定容引擎
 ├── native_worker.py       # 版本协议、安全取消与自动回退桥接
-├── native_worker/         # 独立 C++17/MuPDF 高速 worker
+├── native_worker/         # Rust 守卫与 C++17/MuPDF 高速后端
+├── SECURITY.md            # 原生 worker 威胁模型与漏洞报告策略
 ├── tests/                 # 压缩与内容保真回归测试
 ├── benchmarks/            # 固定基线、运行说明与实测结果
 ├── tools/benchmark_suite.py # 性能、定容与画质基准
@@ -155,7 +159,7 @@ pdf-size-reducer/
 
 PDF 的图形选择、结构保护、安全控制和回退逻辑继续由 Python 负责。C++17 worker 的协议 2 会从一次高分辨率母版生成整条 Figure 质量阶梯，全局率失真规划器随后统一分配字节预算，避免反复重写整个 PDF。固定 `Automatica.pdf → 3.12 MiB` 基准从 v3.3.1 的 169.964 秒、v3.4.0 的 33.074 秒进一步缩短到 **9.501 秒**，相比分别达到 **17.889 倍**和 **3.481 倍加速**。输出比目标小 809 字节，原生文字完全保留，对源文件 PSNR 为 39.854 dB，并通过黑背景检测。详见[实测基准](benchmarks/RESULTS.md)。
 
-C++ worker 是可选加速层：源码环境未构建或 worker 异常时会自动回退到原有 Python/MuPDF 引擎；Windows 打包版会自动内置。`build_exe.bat` 同时生成 `dist\PDF_Fast_Worker` 独立 worker 文件夹和可直接分发的 `dist\PDF_Fast_Worker_Windows_x64.zip`。
+C++ worker 是可选加速层：源码环境未构建或 worker 异常时会自动回退到原有 Python/MuPDF 引擎；Windows 打包版会自动内置。v3.6 中 Python 只启动零第三方 crate 依赖的 Rust 守卫，由守卫核验并约束 C++ 后端后再处理文档；完整能力边界与限制见[安全策略](SECURITY.md)。`build_exe.bat` 同时生成 `dist\PDF_Fast_Worker` 独立 worker 文件夹和可直接分发的 `dist\PDF_Fast_Worker_Windows_x64.zip`。
 
 ## 隐私
 

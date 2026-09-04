@@ -1,0 +1,14 @@
+[package]
+name = "pdf-worker-guard"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "s"
+overflow-checks = true
+panic = "abort"
+strip = "symbols"

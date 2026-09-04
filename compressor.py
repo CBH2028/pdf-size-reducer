@@ -2475,7 +2475,9 @@ def compress_pdf(
             if figure_regions and find_native_worker() is not None:
                 try:
                     _notify(progress_callback, 4, "正在启动 C++ 高速压缩引擎…")
-                    native_session = NativeWorkerSession(source_path)
+                    native_session = NativeWorkerSession(
+                        source_path, workspace=temp_dir
+                    )
                 except NativeWorkerError:
                     native_session = None
 

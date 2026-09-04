@@ -36,3 +36,26 @@ automatic fallback to the previous search engine.
 Times naturally vary with CPU load and storage caching. Run
 [`tools/benchmark_suite.py`](../tools/benchmark_suite.py) against the same
 fixture hashes for a comparable result.
+
+## v3.6 security-guard regression
+
+Measured on 2026-09-04 using the same machine and source hash. For a controlled
+A/B comparison, commit `277faa1` supplied the v3.5 Python path while both sides
+used the same freshly hardened C++ backend; the v3.6 side additionally used the
+Rust integrity, protocol, workspace, and Job Object guard.
+
+| Metric | v3.5 path, no Rust guard | v3.6 guarded path | Change |
+|---|---:|---:|---:|
+| Exact 3.12 MiB compression | 16.790 s | 16.879 s | +0.53% |
+| Native ladder stage | 5.646 s | 6.010 s | +6.45% |
+| Scan + thumbnails | 6.929 s | 6.983 s | +0.78% |
+| Main-process peak memory | 199.32 MiB | 199.03 MiB | -0.29 MiB |
+| Output size | 3,270,748 B | 3,270,748 B | identical |
+
+The guarded output remained 809 bytes below target, with identical 39.854 dB
+PSNR, 0.962284 edge similarity, exact native-text preservation, and no detected
+black-background regression. The 0.089-second end-to-end difference is small
+enough to be indistinguishable from ordinary run-to-run system noise; the
+security layer does not create a perceptible overall slowdown. The historical
+9.501-second v3.5 release run above was recorded under a faster scan/cache state,
+so the controlled same-session A/B is the appropriate security-overhead check.

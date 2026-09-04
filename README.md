@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-26%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-33%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -70,6 +70,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
 | Responsive interface | Figure scanning and thumbnail rendering run in isolated processes. Large documents do not lock the main window and scanning can be stopped safely. |
 | Native high-speed planner | A C++17/MuPDF worker builds each Figure's complete quality ladder from one master rasterization; a global byte-budget planner then selects the clearest combination. |
+| Hardened native boundary | A Rust guard performs memory-safe request parsing, verifies the native backend and DLL, confines jobs to a private workspace, and applies Windows process and memory limits. |
 | Commercial-grade desktop UI | A glass-like header, structured workflow cards, animated status, a gradient primary action, progressive thumbnails, hover feedback, smooth scrolling, and high-DPI support. |
 
 ## Quick start
@@ -77,6 +78,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 ### Option 1: portable Windows build
 
 Open [Releases](https://github.com/CBH2028/pdf-size-reducer/releases/latest), download `PDF_Size_Reducer.exe`, and run it. Python is not required.
+v3.6 and later releases also provide `SHA256SUMS.txt` for download-integrity checks.
 
 ### Option 2: run from source
 
@@ -118,6 +120,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
+# Requires stable Rust (rustup) and Visual Studio 2022 C++ Build Tools.
 native_worker\build.bat
 ```
 
@@ -153,7 +156,8 @@ pdf-size-reducer/
 ├── qt_app.py              # Qt 6 desktop UI and background jobs
 ├── compressor.py          # Figure discovery, rendering, and targeting engine
 ├── native_worker.py       # Versioned bridge, cancellation, and safe fallback
-├── native_worker/         # Standalone C++17/MuPDF high-speed worker
+├── native_worker/         # Rust guard plus C++17/MuPDF high-speed backend
+├── SECURITY.md            # Native-worker threat model and reporting policy
 ├── tests/                 # Compression and content-preservation regressions
 ├── benchmarks/            # Fixed baseline, benchmark guide, and checked results
 ├── tools/benchmark_suite.py # Performance, targeting, and quality benchmark
@@ -167,7 +171,7 @@ pdf-size-reducer/
 
 MuPDF, Pillow, and Qt already perform low-level work in native code, while Python retains PDF selection, safety, and fallback control. Protocol 2 of the C++17 worker now builds an entire Figure quality ladder from one high-resolution master; a global rate-distortion planner distributes the byte budget and avoids repeatedly rewriting the whole PDF. On the fixed `Automatica.pdf → 3.12 MiB` benchmark this reduced compression from 169.964 seconds in v3.3.1 and 33.074 seconds in v3.4.0 to **9.501 seconds**—**17.889× faster** than v3.3.1 and **3.481× faster** than v3.4.0. The output was 809 bytes below target, preserved native text exactly, scored 39.854 dB PSNR, and passed the black-background gate. See [the measured benchmark](benchmarks/RESULTS.md).
 
-The native worker is optional. Source runs without a built worker use the tested Python/MuPDF fallback; packaged Windows builds include it automatically. `build_exe.bat` also produces a standalone folder in `dist\PDF_Fast_Worker` and a shareable `dist\PDF_Fast_Worker_Windows_x64.zip` bundle.
+The native worker is optional. Source runs without a built worker use the tested Python/MuPDF fallback; packaged Windows builds include it automatically. In v3.6, Python launches a zero-third-party-dependency Rust guard, which verifies and contains the C++ backend before it processes a document. See the honest scope and limitations in the [security policy](SECURITY.md). `build_exe.bat` also produces a standalone folder in `dist\PDF_Fast_Worker` and a shareable `dist\PDF_Fast_Worker_Windows_x64.zip` bundle.
 
 ## Privacy
 

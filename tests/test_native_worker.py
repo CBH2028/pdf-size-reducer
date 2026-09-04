@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import io
+import json
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 
@@ -13,6 +16,7 @@ from compressor import compress_pdf
 from native_worker import (
     NativeRenderRequest,
     NativeWorkerCancelled,
+    NativeWorkerError,
     NativeWorkerSession,
 )
 
@@ -46,7 +50,22 @@ def native_binary(monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_native_worker_protocol(native_binary: Path) -> None:
     assert native_binary.name == "pdf_fast_worker.exe"
+    assert native_binary.with_name("pdf_fast_worker_backend.exe").is_file()
     assert native_binary.with_name("mupdfcpp64.dll").is_file()
+    completed = subprocess.run(
+        [str(native_binary), "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    response = json.loads(completed.stdout)
+    assert response["security_guard"] == 1
+    assert response["memory_limit_mib"] == 1536
+    assert response["active_process_limit"] == 2
+    assert len(response["backend_sha256"]) == 64
+    assert len(response["mupdf_sha256"]) == 64
 
 
 def test_persistent_native_session_culls_text(
@@ -61,7 +80,7 @@ def test_persistent_native_session_culls_text(
     first_request = NativeRenderRequest(0, 0, rectangle, 144, 85)
     second_request = NativeRenderRequest(0, 0, rectangle, 150, 85)
 
-    with NativeWorkerSession(source, threads=2) as session:
+    with NativeWorkerSession(source, threads=2, workspace=tmp_path) as session:
         process_id = session.process.pid
         first = session.render([first_request], first_directory)[0]
         second = session.render([second_request], second_directory)[0]
@@ -99,6 +118,183 @@ def test_native_ladder_reuses_one_master_render(
     assert Image.open(io.BytesIO(rendered[1])).size == (520, 300)
     assert Image.open(io.BytesIO(rendered[2])).size == (260, 150)
     assert rendered[0] != rendered[1]
+
+
+def test_native_session_rejects_unsafe_requests(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    source = tmp_path / "unsafe-request.pdf"
+    rectangle = _make_native_fixture(source)
+    request = NativeRenderRequest(0, 0, rectangle, 1201, 85)
+
+    with NativeWorkerSession(source, threads=1, workspace=tmp_path) as session:
+        with pytest.raises(NativeWorkerError, match="DPI"):
+            session.render([request], tmp_path / "unsafe-request")
+
+
+def test_native_session_rejects_workspace_escape(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    source = tmp_path / "workspace-source.pdf"
+    rectangle = _make_native_fixture(source)
+    workspace = tmp_path / "private"
+    workspace.mkdir()
+    request = NativeRenderRequest(0, 0, rectangle, 144, 85)
+
+    with NativeWorkerSession(source, threads=1, workspace=workspace) as session:
+        with pytest.raises(NativeWorkerError, match="escaped"):
+            session.render([request], tmp_path / "outside")
+
+
+def test_native_session_rejects_aggregate_pixel_dos(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    source = tmp_path / "aggregate-limit.pdf"
+    _make_native_fixture(source)
+    requests = [
+        NativeRenderRequest(item_id, 0, (0.0, 0.0, 720.0, 720.0), 720, 85)
+        for item_id in range(40)
+    ]
+
+    with NativeWorkerSession(source, threads=1, workspace=tmp_path) as session:
+        with pytest.raises(NativeWorkerError, match="2-gigapixel"):
+            session.render(requests, tmp_path / "aggregate-output")
+
+
+def test_rust_guard_rejects_manifest_path_traversal(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    source = tmp_path / "guard-source.pdf"
+    rectangle = _make_native_fixture(source)
+    workspace = tmp_path / "workspace"
+    output = workspace / "render"
+    output.mkdir(parents=True)
+    x0, y0, x1, y1 = rectangle
+    manifest = output / "unsafe.tsv"
+    manifest.write_text(
+        f"0\t0\t{x0}\t{y0}\t{x1}\t{y1}\t144\t85\t../escape.jpg\t0\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            str(native_binary),
+            "render-batch",
+            "--input",
+            str(source),
+            "--manifest",
+            str(manifest),
+            "--output-dir",
+            str(output),
+            "--threads",
+            "1",
+            "--workspace",
+            str(workspace),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    assert completed.returncode == 64
+    assert "safe JPEG basenames" in completed.stderr
+    assert not (workspace / "escape.jpg").exists()
+
+
+def test_rust_guard_detects_backend_tampering(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    bundle = tmp_path / "tampered-worker"
+    bundle.mkdir()
+    for filename in (
+        "pdf_fast_worker.exe",
+        "pdf_fast_worker_backend.exe",
+        "mupdfcpp64.dll",
+    ):
+        shutil.copy2(native_binary.with_name(filename), bundle / filename)
+    with (bundle / "pdf_fast_worker_backend.exe").open("ab") as backend:
+        backend.write(b"tampered")
+
+    completed = subprocess.run(
+        [str(bundle / "pdf_fast_worker.exe"), "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    assert completed.returncode == 64
+    assert "integrity verification failed" in completed.stderr
+
+
+def test_rust_guard_detects_mupdf_tampering(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    bundle = tmp_path / "tampered-mupdf"
+    bundle.mkdir()
+    for filename in (
+        "pdf_fast_worker.exe",
+        "pdf_fast_worker_backend.exe",
+        "mupdfcpp64.dll",
+    ):
+        shutil.copy2(native_binary.with_name(filename), bundle / filename)
+    with (bundle / "mupdfcpp64.dll").open("ab") as runtime:
+        runtime.write(b"tampered")
+
+    completed = subprocess.run(
+        [str(bundle / "pdf_fast_worker.exe"), "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    assert completed.returncode == 64
+    assert "MuPDF runtime integrity verification failed" in completed.stderr
+
+
+def test_cpp_backend_rejects_unsafe_manifest_without_guard(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    source = tmp_path / "backend-defense.pdf"
+    rectangle = _make_native_fixture(source)
+    output = tmp_path / "backend-output"
+    output.mkdir()
+    x0, y0, x1, y1 = rectangle
+    manifest = output / "unsafe.tsv"
+    manifest.write_text(
+        f"0\t0\t{x0}\t{y0}\t{x1}\t{y1}\t1201\t85\tfigure.jpg\t0\n",
+        encoding="utf-8",
+    )
+    backend = native_binary.with_name("pdf_fast_worker_backend.exe")
+
+    completed = subprocess.run(
+        [
+            str(backend),
+            "render-batch",
+            "--input",
+            str(source),
+            "--manifest",
+            str(manifest),
+            "--output-dir",
+            str(output),
+            "--threads",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    assert completed.returncode == 3
+    assert "outside the safety range" in completed.stdout
+    assert not (output / "figure.jpg").exists()
 
 
 def test_compressor_uses_global_native_planner(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import subprocess
@@ -16,6 +17,12 @@ from typing import Callable
 
 
 PROTOCOL_VERSION = 2
+SECURITY_GUARD_VERSION = 1
+MAX_NATIVE_TASKS = 4096
+MAX_NATIVE_BATCH_PIXELS = 2_000_000_000
+MAX_NATIVE_OUTPUT_BYTES = 64 * 1024 * 1024
+MAX_RESPONSE_LINE_BYTES = 64 * 1024
+DEFAULT_BATCH_TIMEOUT_SECONDS = 900
 ProgressCallback = Callable[[int, int], None]
 
 
@@ -54,16 +61,102 @@ def _candidate_paths() -> list[Path]:
     return paths
 
 
-def _worker_environment() -> dict[str, str]:
-    """Expose the bundled PyMuPDF DLL directory to the child process."""
-    environment = os.environ.copy()
+def _worker_environment(worker_directory: Path) -> dict[str, str]:
+    """Build a minimal environment for the guarded native subprocess."""
+    environment = {
+        name: os.environ[name]
+        for name in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+        if name in os.environ
+    }
+    path_parts = [str(worker_directory)]
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root:
-        dll_directory = str(Path(bundle_root) / "pymupdf")
-        environment["PATH"] = dll_directory + os.pathsep + environment.get(
-            "PATH", ""
-        )
+        path_parts.append(str(Path(bundle_root) / "pymupdf"))
+    system_root = environment.get("SYSTEMROOT") or environment.get("WINDIR")
+    if system_root:
+        path_parts.append(str(Path(system_root) / "System32"))
+    environment["PATH"] = os.pathsep.join(path_parts)
+    memory_limit = os.environ.get(
+        "PDF_SIZE_REDUCER_WORKER_MEMORY_MIB", ""
+    ).strip()
+    if memory_limit:
+        environment["PDF_SIZE_REDUCER_WORKER_MEMORY_MIB"] = memory_limit
     return environment
+
+
+def _strict_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise NativeWorkerError(f"C++ worker returned an invalid {label}.")
+    return value
+
+
+def _is_sha256_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
+
+
+def _validate_requests(requests: list[NativeRenderRequest]) -> None:
+    if len(requests) > MAX_NATIVE_TASKS:
+        raise NativeWorkerError(
+            f"A native batch cannot exceed {MAX_NATIVE_TASKS} tasks."
+        )
+    identifiers: set[int] = set()
+    total_pixels = 0.0
+    for request in requests:
+        integer_fields = (
+            (request.id, "task id", 0, 1_000_000),
+            (request.page_number, "page number", 0, 1_000_000),
+            (request.group_id, "group id", 0, 1_000_000),
+            (request.dpi, "DPI", 24, 1200),
+            (request.jpeg_quality, "JPEG quality", 35, 100),
+        )
+        for value, label, minimum, maximum in integer_fields:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not minimum <= value <= maximum
+            ):
+                raise NativeWorkerError(
+                    f"Native {label} is outside the safety range."
+                )
+        if request.id in identifiers:
+            raise NativeWorkerError("Native task ids must be unique.")
+        identifiers.add(request.id)
+        if (
+            not isinstance(request.rectangle, tuple)
+            or len(request.rectangle) != 4
+        ):
+            raise NativeWorkerError(
+                "Native Figure coordinates are outside the safety range."
+            )
+        if not all(
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            and abs(value) <= 1_000_000
+            for value in request.rectangle
+        ):
+            raise NativeWorkerError(
+                "Native Figure coordinates are outside the safety range."
+            )
+        x0, y0, x1, y1 = request.rectangle
+        if x1 <= x0 or y1 <= y0:
+            raise NativeWorkerError("Native Figure rectangle has no area.")
+        width = (x1 - x0) * request.dpi / 72
+        height = (y1 - y0) * request.dpi / 72
+        task_pixels = width * height
+        if task_pixels > 100_000_000:
+            raise NativeWorkerError(
+                "Native Figure render exceeds the 100-megapixel safety limit."
+            )
+        total_pixels += task_pixels
+        if total_pixels > MAX_NATIVE_BATCH_PIXELS:
+            raise NativeWorkerError(
+                "Native batch exceeds the 2-gigapixel safety limit."
+            )
 
 
 @lru_cache(maxsize=1)
@@ -86,12 +179,24 @@ def find_native_worker() -> Path | None:
                 timeout=5,
                 check=False,
                 creationflags=flags,
-                env=_worker_environment(),
+                env=_worker_environment(resolved.parent),
             )
             if completed.returncode:
                 continue
-            response = json.loads(completed.stdout.splitlines()[-1])
-            if response.get("protocol") == PROTOCOL_VERSION:
+            response_lines = completed.stdout.splitlines()
+            if not response_lines:
+                continue
+            response = json.loads(response_lines[-1])
+            if not isinstance(response, dict):
+                continue
+            backend_digest = response.get("backend_sha256")
+            mupdf_digest = response.get("mupdf_sha256")
+            if (
+                response.get("protocol") == PROTOCOL_VERSION
+                and response.get("security_guard") == SECURITY_GUARD_VERSION
+                and _is_sha256_digest(backend_digest)
+                and _is_sha256_digest(mupdf_digest)
+            ):
                 return resolved
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
             continue
@@ -100,7 +205,17 @@ def find_native_worker() -> Path | None:
 
 def _reader(stream, messages: queue.Queue[object]) -> None:
     try:
-        for line in stream:
+        while True:
+            line = stream.readline(MAX_RESPONSE_LINE_BYTES + 1)
+            if not line:
+                break
+            if len(line.encode("utf-8", errors="replace")) > MAX_RESPONSE_LINE_BYTES:
+                messages.put(
+                    NativeWorkerError(
+                        "C++ worker response exceeded the 64 KiB safety limit."
+                    )
+                )
+                return
             messages.put(line)
     finally:
         messages.put(None)
@@ -109,6 +224,7 @@ def _reader(stream, messages: queue.Queue[object]) -> None:
 def _write_manifest(
     requests: list[NativeRenderRequest], directory: Path
 ) -> tuple[Path, dict[int, str]]:
+    _validate_requests(requests)
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=True)
     manifest = directory / "native-render-tasks.tsv"
@@ -132,22 +248,42 @@ def _write_manifest(
                 )
             )
         )
-    manifest.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    try:
+        with manifest.open("x", encoding="utf-8", newline="\n") as output:
+            output.write("\n".join(rows) + "\n")
+    except FileExistsError as exc:
+        raise NativeWorkerError("Native render manifest already exists.") from exc
     return manifest, filenames
 
 
 class NativeWorkerSession:
     """A persistent C++ process with documents opened once per native thread."""
 
-    def __init__(self, input_path: str | Path, threads: int | None = None) -> None:
+    def __init__(
+        self,
+        input_path: str | Path,
+        threads: int | None = None,
+        workspace: str | Path | None = None,
+    ) -> None:
         worker = find_native_worker()
         if worker is None:
             raise NativeWorkerError(
                 "C++ worker is not installed or is incompatible."
             )
         self.input_path = Path(input_path).resolve()
+        self.workspace = Path(workspace or self.input_path.parent).resolve()
+        if not self.workspace.is_dir():
+            raise NativeWorkerError("Native worker workspace does not exist.")
         default_threads = min(8, max(2, (os.cpu_count() or 4) // 2))
         self.thread_count = max(1, min(12, threads or default_threads))
+        try:
+            configured_timeout = int(
+                os.environ.get("PDF_SIZE_REDUCER_WORKER_TIMEOUT_SECONDS", "")
+                or DEFAULT_BATCH_TIMEOUT_SECONDS
+            )
+        except ValueError:
+            configured_timeout = DEFAULT_BATCH_TIMEOUT_SECONDS
+        self.batch_timeout_seconds = max(30, min(1800, configured_timeout))
         command = [
             str(worker),
             "serve",
@@ -155,6 +291,8 @@ class NativeWorkerSession:
             str(self.input_path),
             "--threads",
             str(self.thread_count),
+            "--workspace",
+            str(self.workspace),
         ]
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.process = subprocess.Popen(
@@ -167,7 +305,8 @@ class NativeWorkerSession:
             errors="replace",
             bufsize=1,
             creationflags=flags,
-            env=_worker_environment(),
+            env=_worker_environment(worker.parent),
+            cwd=worker.parent,
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -215,6 +354,9 @@ class NativeWorkerSession:
                 raise NativeWorkerError(
                     "C++ worker closed its output stream unexpectedly."
                 )
+            if isinstance(message, NativeWorkerError):
+                self.close(force=True)
+                raise message
             line = str(message).strip()
             if not line:
                 continue
@@ -224,12 +366,29 @@ class NativeWorkerSession:
                 response = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(response, dict):
+                self.close(force=True)
+                raise NativeWorkerError(
+                    "C++ worker returned a non-object protocol response."
+                )
             current_type = str(response.get("type", ""))
             if current_type == "progress" and progress_callback:
-                progress_callback(
-                    int(response.get("completed", 0)),
-                    int(response.get("total", 0)),
-                )
+                try:
+                    completed = _strict_int(
+                        response.get("completed"), "progress count"
+                    )
+                    total = _strict_int(
+                        response.get("total"), "progress total"
+                    )
+                except NativeWorkerError:
+                    self.close(force=True)
+                    raise
+                if completed < 0 or total < 1 or completed > total:
+                    self.close(force=True)
+                    raise NativeWorkerError(
+                        "C++ worker returned invalid progress bounds."
+                    )
+                progress_callback(completed, total)
             if current_type == response_type:
                 return response
 
@@ -245,6 +404,10 @@ class NativeWorkerSession:
         if not requests:
             return {}
         directory = Path(work_directory).resolve()
+        if not directory.is_relative_to(self.workspace):
+            raise NativeWorkerError(
+                "Native render directory escaped the private workspace."
+            )
         manifest, filenames = _write_manifest(requests, directory)
         for path in (manifest, directory):
             if "\t" in str(path) or "\n" in str(path):
@@ -262,23 +425,65 @@ class NativeWorkerSession:
 
         response = self._wait_for_response(
             "result",
+            timeout=self.batch_timeout_seconds,
             cancel_event=cancel_event,
             progress_callback=progress_callback,
         )
         self.last_response = response
-        if not response.get("ok"):
+        if response.get("ok") is not True:
+            self.close(force=True)
             raise NativeWorkerError(
                 "C++ worker failed: " + str(response.get("message", "no detail"))
+            )
+        try:
+            completed = _strict_int(
+                response.get("completed"), "completion count"
+            )
+            variants = _strict_int(response.get("variants"), "variant count")
+            masters = _strict_int(response.get("master_renders"), "master count")
+        except NativeWorkerError:
+            self.close(force=True)
+            raise
+        expected_masters = (
+            len({request.group_id for request in requests})
+            if command == "LADDER"
+            else len(requests)
+        )
+        if (
+            completed != len(requests)
+            or variants != len(requests)
+            or masters != expected_masters
+        ):
+            self.close(force=True)
+            raise NativeWorkerError(
+                "C++ worker completion metadata did not match the request."
             )
 
         rendered: dict[int, bytes] = {}
         for request in requests:
             output_path = directory / filenames[request.id]
-            if not output_path.is_file() or output_path.stat().st_size == 0:
+            if output_path.is_symlink() or not output_path.is_file():
+                self.close(force=True)
                 raise NativeWorkerError(
                     f"C++ worker did not produce Figure {request.id}."
                 )
-            rendered[request.id] = output_path.read_bytes()
+            size = output_path.stat().st_size
+            if size < 4 or size > MAX_NATIVE_OUTPUT_BYTES:
+                self.close(force=True)
+                raise NativeWorkerError(
+                    f"C++ worker produced an unsafe Figure size for {request.id}."
+                )
+            payload = output_path.read_bytes()
+            if (
+                len(payload) != size
+                or not payload.startswith(b"\xff\xd8")
+                or not payload.endswith(b"\xff\xd9")
+            ):
+                self.close(force=True)
+                raise NativeWorkerError(
+                    f"C++ worker produced an invalid JPEG for Figure {request.id}."
+                )
+            rendered[request.id] = payload
         return rendered
 
     def render(
@@ -353,7 +558,12 @@ def render_figure_batch(
     """Render one batch with a short-lived native session."""
     if not requests:
         return {}
-    with NativeWorkerSession(input_path, threads=threads) as session:
+    work_directory = Path(work_directory).resolve()
+    with NativeWorkerSession(
+        input_path,
+        threads=threads,
+        workspace=work_directory,
+    ) as session:
         return session.render(
             requests,
             work_directory,

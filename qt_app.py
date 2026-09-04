@@ -88,7 +88,7 @@ from native_worker import find_native_worker
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.6.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"

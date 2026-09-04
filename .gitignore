@@ -5,6 +5,7 @@ build/
 dist/
 native_worker/bin/
 native_worker/*.obj
+native_worker/guard/target/
 *.spec
 test_*.pdf
 *.log

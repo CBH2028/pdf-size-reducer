@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -29,6 +30,12 @@ namespace {
 
 constexpr int kProtocolVersion = 2;
 constexpr int kMaximumThreads = 12;
+constexpr size_t kMaximumTasks = 4096;
+constexpr uintmax_t kMaximumManifestBytes = 8ULL * 1024ULL * 1024ULL;
+constexpr size_t kMaximumManifestLineBytes = 1024;
+constexpr double kMaximumCoordinate = 1'000'000.0;
+constexpr double kMaximumPixelsPerTask = 100'000'000.0;
+constexpr double kMaximumPixelsPerBatch = 2'000'000'000.0;
 
 struct RenderTask {
     int id = 0;
@@ -94,12 +101,68 @@ std::vector<std::string> split_tabs(const std::string& line) {
     return values;
 }
 
+int parse_bounded_integer(
+    const std::string& value,
+    const char* label,
+    int minimum,
+    int maximum) {
+    size_t parsed_characters = 0;
+    long long parsed = 0;
+    try {
+        parsed = std::stoll(value, &parsed_characters, 10);
+    } catch (const std::exception&) {
+        throw std::runtime_error(std::string(label) + " is not an integer.");
+    }
+    if (parsed_characters != value.size() || parsed < minimum ||
+        parsed > maximum) {
+        throw std::runtime_error(
+            std::string(label) + " is outside the safety range.");
+    }
+    return static_cast<int>(parsed);
+}
+
+float parse_coordinate(const std::string& value) {
+    size_t parsed_characters = 0;
+    float parsed = 0;
+    try {
+        parsed = std::stof(value, &parsed_characters);
+    } catch (const std::exception&) {
+        throw std::runtime_error("Figure coordinate is not numeric.");
+    }
+    if (parsed_characters != value.size() || !std::isfinite(parsed) ||
+        std::abs(static_cast<double>(parsed)) > kMaximumCoordinate) {
+        throw std::runtime_error("Figure coordinate is outside the safety range.");
+    }
+    return parsed;
+}
+
+bool safe_jpeg_filename(const std::string& value) {
+    if (value.empty() || value.size() > 128 ||
+        value.size() < 4 || value.substr(value.size() - 4) != ".jpg") {
+        return false;
+    }
+    return std::all_of(value.begin(), value.end(), [](unsigned char character) {
+        return (character >= 'a' && character <= 'z') ||
+               (character >= 'A' && character <= 'Z') ||
+               (character >= '0' && character <= '9') ||
+               character == '.' || character == '_' || character == '-';
+    });
+}
+
 std::vector<RenderTask> read_manifest(const fs::path& path) {
+    if (!fs::is_regular_file(path) ||
+        fs::file_size(path) > kMaximumManifestBytes) {
+        throw std::runtime_error(
+            "Render manifest is not a regular file or exceeds 8 MiB.");
+    }
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("Unable to open render manifest.");
     }
     std::vector<RenderTask> tasks;
+    std::unordered_set<int> task_ids;
+    std::unordered_set<std::string> filenames;
+    double total_pixels = 0.0;
     std::string line;
     int line_number = 0;
     while (std::getline(input, line)) {
@@ -107,8 +170,12 @@ std::vector<RenderTask> read_manifest(const fs::path& path) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
-        if (line.empty() || line.front() == '#') {
-            continue;
+        if (line.empty() || line.size() > kMaximumManifestLineBytes) {
+            throw std::runtime_error(
+                "Invalid manifest row " + std::to_string(line_number) + ".");
+        }
+        if (tasks.size() >= kMaximumTasks) {
+            throw std::runtime_error("Render manifest exceeds 4096 tasks.");
         }
         const auto fields = split_tabs(line);
         if (fields.size() != 10) {
@@ -116,23 +183,42 @@ std::vector<RenderTask> read_manifest(const fs::path& path) {
                 "Malformed manifest row " + std::to_string(line_number) + ".");
         }
         RenderTask task;
-        task.id = std::stoi(fields[0]);
-        task.page = std::stoi(fields[1]);
-        task.x0 = std::stof(fields[2]);
-        task.y0 = std::stof(fields[3]);
-        task.x1 = std::stof(fields[4]);
-        task.y1 = std::stof(fields[5]);
-        task.dpi = std::clamp(std::stoi(fields[6]), 24, 1200);
-        task.quality = std::clamp(std::stoi(fields[7]), 35, 100);
+        task.id = parse_bounded_integer(fields[0], "Task id", 0, 1'000'000);
+        task.page = parse_bounded_integer(
+            fields[1], "Page number", 0, 1'000'000);
+        task.x0 = parse_coordinate(fields[2]);
+        task.y0 = parse_coordinate(fields[3]);
+        task.x1 = parse_coordinate(fields[4]);
+        task.y1 = parse_coordinate(fields[5]);
+        task.dpi = parse_bounded_integer(fields[6], "DPI", 24, 1200);
+        task.quality = parse_bounded_integer(
+            fields[7], "JPEG quality", 35, 100);
         task.filename = fields[8];
-        task.group = std::stoi(fields[9]);
-        if (task.page < 0 || task.x1 <= task.x0 || task.y1 <= task.y0 ||
-            task.filename.empty() || task.filename.find_first_of("/\\") != std::string::npos) {
+        task.group = parse_bounded_integer(
+            fields[9], "Render group", 0, 1'000'000);
+        const double width =
+            static_cast<double>(task.x1 - task.x0) * task.dpi / 72.0;
+        const double height =
+            static_cast<double>(task.y1 - task.y0) * task.dpi / 72.0;
+        const double task_pixels = width * height;
+        if (task.x1 <= task.x0 || task.y1 <= task.y0 ||
+            !safe_jpeg_filename(task.filename) ||
+            !task_ids.insert(task.id).second ||
+            !filenames.insert(task.filename).second ||
+            task_pixels > kMaximumPixelsPerTask) {
             throw std::runtime_error(
                 "Invalid render task on manifest row " +
                 std::to_string(line_number) + ".");
         }
+        total_pixels += task_pixels;
+        if (total_pixels > kMaximumPixelsPerBatch) {
+            throw std::runtime_error(
+                "Render manifest exceeds the 2-gigapixel safety limit.");
+        }
         tasks.push_back(std::move(task));
+    }
+    if (tasks.empty()) {
+        throw std::runtime_error("Render manifest is empty.");
     }
     return tasks;
 }
@@ -288,6 +374,15 @@ public:
         const fs::path& output_directory,
         bool ladder_mode = false) {
         auto tasks = read_manifest(manifest_path);
+        fs::create_directories(output_directory);
+        if (!fs::is_directory(output_directory)) {
+            throw std::runtime_error("Render output is not a directory.");
+        }
+        for (const auto& task : tasks) {
+            if (fs::exists(output_directory / fs::u8path(task.filename))) {
+                throw std::runtime_error("A render output file already exists.");
+            }
+        }
         std::vector<std::vector<RenderTask>> groups;
         if (ladder_mode) {
             std::map<int, std::vector<RenderTask>> grouped;
@@ -305,7 +400,6 @@ public:
                 groups.push_back({std::move(task)});
             }
         }
-        fs::create_directories(output_directory);
         const auto started = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
