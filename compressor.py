@@ -344,12 +344,19 @@ def _collect_images(
     return images
 
 
-def _collect_vector_pages(source: fitz.Document) -> list[int]:
+def _collect_vector_pages(
+    source: fitz.Document,
+    allowed_pages: set[int] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> list[int]:
     """Return pages containing PDF line-art/path drawing operators."""
     pages: list[int] = []
     for page_number in range(source.page_count):
+        _check_cancel(cancel_event)
+        if allowed_pages is not None and page_number not in allowed_pages:
+            continue
         try:
-            if source[page_number].get_drawings():
+            if source[page_number].get_cdrawings():
                 pages.append(page_number)
         except (RuntimeError, ValueError):
             pass
@@ -469,7 +476,10 @@ def _caption_lane(page: fitz.Page, caption_rect: fitz.Rect) -> str:
 def _page_caption_lines(page: fitz.Page) -> list[tuple[str, fitz.Rect]]:
     """Return strict Figure-caption labels and their first-line bounds."""
     captions: list[tuple[str, fitz.Rect]] = []
-    for block in page.get_text("dict").get("blocks", []):
+    # Captions need text and geometry, never encoded image payloads. The
+    # default DICT flags unnecessarily included embedded image payloads here.
+    flags = fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES
+    for block in page.get_text("dict", flags=flags).get("blocks", []):
         if block.get("type") != 0:
             continue
         for line in block.get("lines", []):
@@ -493,7 +503,7 @@ def _figure_rect_for_caption(
         graphic_rectangles = []
         try:
             graphic_rectangles.extend(
-                fitz.Rect(item["rect"]) for item in page.get_drawings()
+                fitz.Rect(item["rect"]) for item in page.get_cdrawings()
             )
         except (RuntimeError, ValueError):
             pass
@@ -633,6 +643,7 @@ def _detect_figure_assets(
     document: fitz.Document,
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
+    figure_image_xrefs: set[int] | None = None,
 ) -> list[PDFAsset]:
     """Detect complete paper Figures, using captions as semantic anchors."""
     assets: list[PDFAsset] = []
@@ -650,7 +661,7 @@ def _detect_figure_assets(
         graphic_rectangles: list[fitz.Rect] = []
         drawings: list[dict[str, object]] = []
         try:
-            drawings = page.get_drawings()
+            drawings = page.get_cdrawings()
             graphic_rectangles.extend(fitz.Rect(item["rect"]) for item in drawings)
         except (RuntimeError, ValueError):
             pass
@@ -731,6 +742,8 @@ def _detect_figure_assets(
                 if int(info.get("xref", 0)) > 0
                 and _rect_center_is_inside(fitz.Rect(info["bbox"]), rectangle)
             }
+            if figure_image_xrefs is not None:
+                figure_image_xrefs.update(inside_image_xrefs)
             image_storage = sum(
                 _image_storage_bytes(
                     document, xref, image_smasks.get(xref, 0)
@@ -770,35 +783,22 @@ def list_pdf_assets(
     _check_cancel(cancel_event)
     _notify(progress_callback, 2, "正在验证 PDF 并读取目录…")
     with fitz.open(Path(input_path)) as document:
+        if document.needs_pass:
+            raise PasswordProtectedPDF("此 PDF 受密码保护，请先解密后再处理。")
+        if not document.is_pdf or document.page_count == 0:
+            raise CompressionError("文件中没有可处理的 PDF 页面。")
         _notify(
             progress_callback,
             6,
             f"已打开 PDF，共 {document.page_count} 页",
         )
-        figure_assets = _detect_figure_assets(
-            document, progress_callback, cancel_event
-        )
-        figures_by_page: dict[int, list[fitz.Rect]] = {}
-        for asset in figure_assets:
-            if asset.rect is not None:
-                figures_by_page.setdefault(asset.page_numbers[0], []).append(
-                    fitz.Rect(asset.rect)
-                )
-
         # An image xref is replaced globally. Hide it as a standalone choice if
         # any occurrence belongs to a detected Figure, preventing double work
         # and ensuring that deselecting the Figure really preserves it.
         figure_image_xrefs: set[int] = set()
-        for page_number, figure_rectangles in figures_by_page.items():
-            _check_cancel(cancel_event)
-            for info in document[page_number].get_image_info(xrefs=True):
-                xref = int(info.get("xref", 0))
-                image_rect = fitz.Rect(info["bbox"])
-                if xref > 0 and any(
-                    _rect_center_is_inside(image_rect, figure_rect)
-                    for figure_rect in figure_rectangles
-                ):
-                    figure_image_xrefs.add(xref)
+        figure_assets = _detect_figure_assets(
+            document, progress_callback, cancel_event, figure_image_xrefs
+        )
 
         _notify(progress_callback, 60, "正在整理 Figure 内的图像与矢量对象…")
 
@@ -2349,6 +2349,16 @@ def merge_pdfs(
     """
     sources = tuple(Path(path).expanduser().resolve() for path in input_paths)
     destination = Path(output_path).expanduser().resolve()
+    original_callback = progress_callback
+    last_progress = 0
+
+    def report(value: int, message: str) -> None:
+        nonlocal last_progress
+        last_progress = max(last_progress, value)
+        if original_callback is not None:
+            original_callback(last_progress, message)
+
+    progress_callback = report
 
     if len(sources) < 2:
         raise CompressionError("请至少选择两个 PDF 文件进行合并。")
@@ -2375,7 +2385,8 @@ def merge_pdfs(
         temp_dir = Path(temporary_directory)
         candidate = temp_dir / "native-merged-pages.pdf"
         combined_toc: list[list[object]] = []
-        page_links: list[tuple[int, dict[str, object]]] = []
+        page_links: dict[int, list[dict[str, object]]] = {}
+        native_eligible = find_native_worker() is not None
         page_offset = 0
         first_metadata: dict[str, str] | None = None
         for index, source_path in enumerate(sources, start=1):
@@ -2396,10 +2407,15 @@ def merge_pdfs(
                     raise PasswordProtectedPDF(
                         f"{source_path.name} 受密码保护，请先解密后再合并。"
                     )
-                if source.page_count == 0:
+                if not source.is_pdf or source.page_count == 0:
                     raise CompressionError(
                         f"{source_path.name} 中没有可合并的页面。"
                     )
+                # The native page graft does not copy AcroForm widgets.
+                # PyMuPDF's form-aware insertion keeps editable field values.
+                if source.is_form_pdf:
+                    native_eligible = False
+                    page_links.clear()
                 if first_metadata is None:
                     first_metadata = {
                         key: str(value)
@@ -2415,7 +2431,10 @@ def merge_pdfs(
                     if details.get("kind") == fitz.LINK_GOTO:
                         details["page"] += page_offset
                     combined_toc.append([level, title, adjusted_page, details])
-                for local_page_number, page in enumerate(source):
+                pages_to_copy_links = range(source.page_count) if native_eligible else ()
+                for local_page_number in pages_to_copy_links:
+                    _check_cancel(cancel_event)
+                    page = source[local_page_number]
                     for link in page.get_links():
                         kind = link.get("kind")
                         if kind == fitz.LINK_NAMED:
@@ -2429,11 +2448,19 @@ def merge_pdfs(
                             for key, value in link.items()
                             if key not in {"xref", "id"}
                         }
-                        if kind == fitz.LINK_GOTO:
-                            adjusted_link["page"] = int(link["page"]) + page_offset
-                        page_links.append(
-                            (local_page_number + page_offset, adjusted_link)
+                        adjusted_link["from"] = (
+                            fitz.Rect(link["from"]) * page.derotation_matrix
                         )
+                        if kind == fitz.LINK_GOTO:
+                            if "to" in link:
+                                adjusted_link["to"] = (
+                                    fitz.Point(link["to"])
+                                    * source[int(link["page"])].derotation_matrix
+                                )
+                            adjusted_link["page"] = int(link["page"]) + page_offset
+                        page_links.setdefault(
+                            local_page_number + page_offset, []
+                        ).append(adjusted_link)
                 page_offset += source.page_count
             except CompressionError:
                 raise
@@ -2463,7 +2490,7 @@ def merge_pdfs(
         native_worker_used = False
         native_merge_seconds = 0.0
         native_result: NativeMergeResult | None = None
-        if find_native_worker() is not None:
+        if native_eligible:
             try:
                 native_result = merge_pdf_pages_native(
                     sources,
@@ -2506,21 +2533,24 @@ def merge_pdfs(
                         merged.set_metadata(metadata)
                     if combined_toc:
                         merged.set_toc(combined_toc)
-                    for page_number, link in page_links:
+                    # Native grafting deliberately omits all links. Restore
+                    # each page once, without repeatedly querying all links or
+                    # deduplicating overlapping rectangles with distinct targets.
+                    for page_number, links in page_links.items():
+                        _check_cancel(cancel_event)
                         page = merged[page_number]
-                        existing = page.get_links()
-                        if not any(
-                            item.get("kind") == link["kind"]
-                            and fitz.Rect(item["from"]) == fitz.Rect(link["from"])
-                            for item in existing
-                        ):
+                        for link in links:
                             page.insert_link(link)
+                    _check_cancel(cancel_event)
                     merged.saveIncr()
             except (RuntimeError, ValueError) as exc:
-                raise CompressionError(
-                    f"写入合并文档信息失败：{exc}"
-                ) from exc
-        else:
+                if isinstance(exc, CompressionCancelled):
+                    raise
+                candidate.unlink(missing_ok=True)
+                native_worker_used = False
+                native_merge_seconds = 0.0
+                _notify(progress_callback, 82, "正在用兼容模式保留文档结构…")
+        if not native_worker_used:
             merged = fitz.open()
             try:
                 for index, source_path in enumerate(sources, start=1):
@@ -2627,6 +2657,16 @@ def compress_pdf(
         temp_dir = Path(temporary_directory)
 
         if original_bytes <= target_bytes:
+            try:
+                with fitz.open(source_path) as checked:
+                    if checked.needs_pass:
+                        raise PasswordProtectedPDF("此 PDF 受密码保护，请先解密后再处理。")
+                    if not checked.is_pdf or checked.page_count == 0:
+                        raise CompressionError("文件中没有可处理的 PDF 页面。")
+            except (RuntimeError, ValueError) as exc:
+                if isinstance(exc, CompressionError):
+                    raise
+                raise CompressionError(f"无法打开此 PDF：{exc}") from exc
             copied = temp_dir / "unchanged.pdf"
             shutil.copy2(source_path, copied)
             # copy2 preserves Windows' read-only bit. Output files belong to
@@ -2654,37 +2694,54 @@ def compress_pdf(
         try:
             if source.needs_pass:
                 raise PasswordProtectedPDF("此 PDF 受密码保护，请先解密后再处理。")
-            if source.page_count == 0:
+            if not source.is_pdf or source.page_count == 0:
                 raise CompressionError("PDF 中没有可处理的页面。")
 
-            # Capture xrefs before saving: MuPDF's structural cleanup may
-            # renumber objects in the in-memory document.
-            all_image_locations = _collect_images(source)
+            # Saving can renumber xrefs. Optimize a separate document so the
+            # original selection remains valid, and scan only if still needed.
+            _notify(progress_callback, 3, "正在尝试无损优化…")
+            lossless = temp_dir / "lossless.pdf"
+            with fitz.open(source_path) as lossless_source:
+                _save_lossless(lossless_source, lossless)
+            _check_cancel(cancel_event)
+            lossless_size = lossless.stat().st_size
+            if lossless_size <= target_bytes:
+                _atomic_install(lossless, destination)
+                _notify(progress_callback, 100, "已通过无损优化达到目标大小。")
+                return CompressionResult(
+                    source_path, destination, original_bytes,
+                    destination.stat().st_size, target_bytes, "lossless",
+                )
+
+            all_image_locations = (
+                {} if selected_image_xrefs == set()
+                else _collect_images(
+                    source,
+                    vector_page_numbers if selected_image_xrefs is None else None,
+                )
+            )
             if selected_image_xrefs is not None:
                 image_locations = {
                     xref: location
                     for xref, location in all_image_locations.items()
                     if xref in selected_image_xrefs
                 }
-            elif vector_page_numbers is not None:
-                image_locations = _collect_images(source, vector_page_numbers)
             else:
                 image_locations = all_image_locations
 
-            all_vector_pages = _collect_vector_pages(source)
+            all_vector_pages: list[int] = []
             if compress_vectors:
                 allowed_vector_pages = (
                     selected_vector_pages
                     if selected_vector_pages is not None
                     else vector_page_numbers
                     if vector_page_numbers is not None
-                    else set(all_vector_pages)
+                    else None
                 )
-                vector_pages = [
-                    page
-                    for page in all_vector_pages
-                    if page in allowed_vector_pages
-                ]
+                all_vector_pages = _collect_vector_pages(
+                    source, allowed_vector_pages, cancel_event
+                )
+                vector_pages = all_vector_pages
             else:
                 vector_pages = []
             figure_regions = (
@@ -2697,24 +2754,16 @@ def compress_pdf(
                 else {}
             )
 
-            _notify(progress_callback, 3, "正在尝试无损优化…")
-            lossless = temp_dir / "lossless.pdf"
-            _save_lossless(source, lossless)
-            _check_cancel(cancel_event)
-            lossless_size = lossless.stat().st_size
-            if lossless_size <= target_bytes:
-                _atomic_install(lossless, destination)
-                _notify(progress_callback, 100, "已通过无损优化达到目标大小。")
-                return CompressionResult(
-                    source_path,
-                    destination,
-                    original_bytes,
-                    destination.stat().st_size,
-                    target_bytes,
-                    "lossless",
-                )
-
             if not image_locations and not vector_pages and not figure_regions:
+                if (
+                    selected_image_xrefs is not None
+                    or selected_vector_pages is not None
+                    or selected_figure_regions is not None
+                ):
+                    raise NoCompressibleImagesError(
+                        "没有勾选可压缩的图片或 Figure，且无损优化未达到目标。"
+                        "请勾选允许压缩的内容，或提高目标大小。"
+                    )
                 if all_image_locations or (all_vector_pages and compress_vectors):
                     raise NoCompressibleImagesError(
                         "检测到了图片或矢量图，但指定页码范围内没有可处理的图。"

@@ -1,0 +1,287 @@
+{
+  "stress_sha256": "c0481f39fe607c42e66e30e36266fe8440cbbe518fce38a48670ce9b1e851214",
+  "baseline": "v3.8.0 (30a8953e3ec4941e9e6561b4e603113be3d48486)",
+  "current": "v3.9.0",
+  "runs": [
+    {
+      "case": "scan",
+      "label": "baseline",
+      "seconds": 5.471095299999433,
+      "pages": 48
+    },
+    {
+      "case": "scan",
+      "label": "current",
+      "seconds": 3.421491299999616,
+      "pages": 48
+    },
+    {
+      "case": "scan",
+      "label": "current",
+      "seconds": 3.4438833000003797,
+      "pages": 48
+    },
+    {
+      "case": "scan",
+      "label": "baseline",
+      "seconds": 5.5178898999984085,
+      "pages": 48
+    },
+    {
+      "case": "scan",
+      "label": "baseline",
+      "seconds": 5.455334000000221,
+      "pages": 48
+    },
+    {
+      "case": "scan",
+      "label": "current",
+      "seconds": 3.385240100000374,
+      "pages": 48
+    },
+    {
+      "case": "merge",
+      "label": "baseline",
+      "seconds": 1.5770059000005858,
+      "pages": 48,
+      "bytes": 102563212,
+      "native": true
+    },
+    {
+      "case": "merge",
+      "label": "current",
+      "seconds": 1.5057285000002594,
+      "pages": 48,
+      "bytes": 102563212,
+      "native": true
+    },
+    {
+      "case": "merge",
+      "label": "current",
+      "seconds": 1.4960857999994914,
+      "pages": 48,
+      "bytes": 102563212,
+      "native": true
+    },
+    {
+      "case": "merge",
+      "label": "baseline",
+      "seconds": 1.4940475000003062,
+      "pages": 48,
+      "bytes": 102563212,
+      "native": true
+    },
+    {
+      "case": "merge",
+      "label": "baseline",
+      "seconds": 1.486914600000091,
+      "pages": 48,
+      "bytes": 102563212,
+      "native": true
+    },
+    {
+      "case": "merge",
+      "label": "current",
+      "seconds": 1.4961824999991222,
+      "pages": 48,
+      "bytes": 102563212,
+      "native": true
+    },
+    {
+      "case": "links",
+      "label": "baseline",
+      "seconds": 0.5554634999989503,
+      "pages": 2,
+      "bytes": 112501,
+      "native": true,
+      "link_count": 800
+    },
+    {
+      "case": "links",
+      "label": "current",
+      "seconds": 0.5872956999992311,
+      "pages": 2,
+      "bytes": 112501,
+      "native": true,
+      "link_count": 800
+    },
+    {
+      "case": "links",
+      "label": "current",
+      "seconds": 0.5807254000010289,
+      "pages": 2,
+      "bytes": 112501,
+      "native": true,
+      "link_count": 800
+    },
+    {
+      "case": "links",
+      "label": "baseline",
+      "seconds": 0.5774129000001267,
+      "pages": 2,
+      "bytes": 112501,
+      "native": true,
+      "link_count": 800
+    },
+    {
+      "case": "links",
+      "label": "baseline",
+      "seconds": 0.5746928000007756,
+      "pages": 2,
+      "bytes": 112501,
+      "native": true,
+      "link_count": 800
+    },
+    {
+      "case": "links",
+      "label": "current",
+      "seconds": 0.5680024999983289,
+      "pages": 2,
+      "bytes": 112501,
+      "native": true,
+      "link_count": 800
+    },
+    {
+      "case": "compression",
+      "label": "baseline",
+      "seconds": 38.99645099999907,
+      "bytes": 7765099,
+      "target": 7767964,
+      "native": false,
+      "planner": false,
+      "text_preserved": true,
+      "render_hashes": [
+        "1710d50f56f03bec9ecb86b545b930b6175dd013e0ad509d41e91c423f8541f5",
+        "9e13c9c9a60899175a81c1c5b5aca05c3359a58752c22630862c18822d49c5d6",
+        "05a9aa07942e4fb2ffe35803257cbfd322f3f7d5391d1830d1579024ccc02323",
+        "ca7ac59c5d4650cb881a162f252ed05cc3d56e1c8b64fd3cc2ad45064d8abd7c",
+        "6f0081e408a256fff7345ab4d6569c5d2d67c325dfc0c91be0f5559a6ff2c20e",
+        "1ef9e986828071036e5564720c53e2b8357a0e5fde69963aafbd16465944b45a"
+      ]
+    },
+    {
+      "case": "compression",
+      "label": "current",
+      "seconds": 38.685542400000486,
+      "bytes": 7765099,
+      "target": 7767964,
+      "native": false,
+      "planner": false,
+      "text_preserved": true,
+      "render_hashes": [
+        "1710d50f56f03bec9ecb86b545b930b6175dd013e0ad509d41e91c423f8541f5",
+        "9e13c9c9a60899175a81c1c5b5aca05c3359a58752c22630862c18822d49c5d6",
+        "05a9aa07942e4fb2ffe35803257cbfd322f3f7d5391d1830d1579024ccc02323",
+        "ca7ac59c5d4650cb881a162f252ed05cc3d56e1c8b64fd3cc2ad45064d8abd7c",
+        "6f0081e408a256fff7345ab4d6569c5d2d67c325dfc0c91be0f5559a6ff2c20e",
+        "1ef9e986828071036e5564720c53e2b8357a0e5fde69963aafbd16465944b45a"
+      ]
+    },
+    {
+      "case": "compression",
+      "label": "current",
+      "seconds": 39.54177600000003,
+      "bytes": 7765099,
+      "target": 7767964,
+      "native": false,
+      "planner": false,
+      "text_preserved": true,
+      "render_hashes": [
+        "1710d50f56f03bec9ecb86b545b930b6175dd013e0ad509d41e91c423f8541f5",
+        "9e13c9c9a60899175a81c1c5b5aca05c3359a58752c22630862c18822d49c5d6",
+        "05a9aa07942e4fb2ffe35803257cbfd322f3f7d5391d1830d1579024ccc02323",
+        "ca7ac59c5d4650cb881a162f252ed05cc3d56e1c8b64fd3cc2ad45064d8abd7c",
+        "6f0081e408a256fff7345ab4d6569c5d2d67c325dfc0c91be0f5559a6ff2c20e",
+        "1ef9e986828071036e5564720c53e2b8357a0e5fde69963aafbd16465944b45a"
+      ]
+    },
+    {
+      "case": "compression",
+      "label": "baseline",
+      "seconds": 39.5623312000007,
+      "bytes": 7765099,
+      "target": 7767964,
+      "native": false,
+      "planner": false,
+      "text_preserved": true,
+      "render_hashes": [
+        "1710d50f56f03bec9ecb86b545b930b6175dd013e0ad509d41e91c423f8541f5",
+        "9e13c9c9a60899175a81c1c5b5aca05c3359a58752c22630862c18822d49c5d6",
+        "05a9aa07942e4fb2ffe35803257cbfd322f3f7d5391d1830d1579024ccc02323",
+        "ca7ac59c5d4650cb881a162f252ed05cc3d56e1c8b64fd3cc2ad45064d8abd7c",
+        "6f0081e408a256fff7345ab4d6569c5d2d67c325dfc0c91be0f5559a6ff2c20e",
+        "1ef9e986828071036e5564720c53e2b8357a0e5fde69963aafbd16465944b45a"
+      ]
+    },
+    {
+      "case": "compression",
+      "label": "baseline",
+      "seconds": 40.01002789999984,
+      "bytes": 7765099,
+      "target": 7767964,
+      "native": false,
+      "planner": false,
+      "text_preserved": true,
+      "render_hashes": [
+        "1710d50f56f03bec9ecb86b545b930b6175dd013e0ad509d41e91c423f8541f5",
+        "9e13c9c9a60899175a81c1c5b5aca05c3359a58752c22630862c18822d49c5d6",
+        "05a9aa07942e4fb2ffe35803257cbfd322f3f7d5391d1830d1579024ccc02323",
+        "ca7ac59c5d4650cb881a162f252ed05cc3d56e1c8b64fd3cc2ad45064d8abd7c",
+        "6f0081e408a256fff7345ab4d6569c5d2d67c325dfc0c91be0f5559a6ff2c20e",
+        "1ef9e986828071036e5564720c53e2b8357a0e5fde69963aafbd16465944b45a"
+      ]
+    },
+    {
+      "case": "compression",
+      "label": "current",
+      "seconds": 39.63246430000072,
+      "bytes": 7765099,
+      "target": 7767964,
+      "native": false,
+      "planner": false,
+      "text_preserved": true,
+      "render_hashes": [
+        "1710d50f56f03bec9ecb86b545b930b6175dd013e0ad509d41e91c423f8541f5",
+        "9e13c9c9a60899175a81c1c5b5aca05c3359a58752c22630862c18822d49c5d6",
+        "05a9aa07942e4fb2ffe35803257cbfd322f3f7d5391d1830d1579024ccc02323",
+        "ca7ac59c5d4650cb881a162f252ed05cc3d56e1c8b64fd3cc2ad45064d8abd7c",
+        "6f0081e408a256fff7345ab4d6569c5d2d67c325dfc0c91be0f5559a6ff2c20e",
+        "1ef9e986828071036e5564720c53e2b8357a0e5fde69963aafbd16465944b45a"
+      ]
+    }
+  ],
+  "median_seconds": {
+    "scan": {
+      "baseline": 5.471095299999433,
+      "current": 3.421491299999616
+    },
+    "merge": {
+      "baseline": 1.4940475000003062,
+      "current": 1.4961824999991222
+    },
+    "links": {
+      "baseline": 0.5746928000007756,
+      "current": 0.5807254000010289
+    },
+    "compression": {
+      "baseline": 39.5623312000007,
+      "current": 39.54177600000003
+    }
+  },
+  "measurement_date": "2026-09-05",
+  "repetitions": 3,
+  "gates": {
+    "identical_asset_records": true,
+    "merged_text_preserved": true,
+    "links_retained": 800,
+    "compression_text_preserved": true,
+    "matching_compressed_72dpi_renders": true,
+    "compression_target_met": true
+  },
+  "environment": {
+    "python": "3.12.10",
+    "pymupdf": "1.28.2",
+    "logical_cpus": 20,
+    "os": "Windows 11"
+  }
+}

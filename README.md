@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-51%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-63%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -69,7 +69,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Visual selection | Browse full-view thumbnails, type, and estimated storage in the main window. Click any card for a zoomable preview rendered at about 240 DPI. |
 | Clarity first | High resolution and moderate JPEG compression are preferred to protect small characters and thin lines. |
 | Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
-| Responsive interface | Figure scanning and thumbnail rendering run in isolated processes. Large documents do not lock the main window and scanning can be stopped safely. |
+| Responsive interface | Figure scanning, thumbnails, merging, and compression run in isolated processes with progress and cooperative cancellation. |
 | Native high-speed planner | A C++17/MuPDF worker builds each Figure's complete quality ladder from one master rasterization; a global byte-budget planner then selects the clearest combination. |
 | Hardened native boundary | A Rust guard performs memory-safe request parsing, verifies the native backend and DLL, confines jobs to a private workspace, and applies Windows process and memory limits. |
 | Commercial-grade desktop UI | A glass-like header, structured workflow cards, animated status, a gradient primary action, progressive thumbnails, hover feedback, smooth scrolling, and high-DPI support. |
@@ -113,6 +113,8 @@ The source PDF is never overwritten. If the selected output path already exists,
 
 Uncheck the workspace option if you only need the merged file. With a matching protocol-3 worker, merging runs through the Rust guard and C++17/MuPDF backend; an unavailable or incompatible worker falls back automatically to Python/PyMuPDF. Both paths run in a separate process and support cancellation. The output is installed only after the completed PDF passes page-count and page-loading checks. Page text, geometry, ordinary page links, annotations, and bookmark destinations are retained. Password-protected inputs must be decrypted first.
 
+Inputs with editable AcroForm fields automatically use the form-aware compatibility merger to preserve field values and editability. Native merges also retain ordinary links on rotated pages, including overlapping links with different targets.
+
 Merging is a page-combination operation: document-level attachments, PDF portfolios, digital signatures, and named destinations are not guaranteed to carry over. The first PDF supplies the merged document's basic metadata.
 
 ## How it works
@@ -153,6 +155,15 @@ hits, memory, PSNR, edge similarity, native-text preservation, and black-backgro
 regressions. See the [benchmark guide](benchmarks/README.md) and
 [latest measured results](benchmarks/RESULTS.md).
 
+For controlled before/after checks, `tools/benchmark_workflow.py` alternates two
+checkouts and verifies matching asset lists, merged text/links, and compressed
+page renders. Both checkouts need their corresponding built native worker:
+
+```powershell
+.\.venv\Scripts\python.exe tools\benchmark_workflow.py `
+    --baseline "D:\path\v3.8-checkout" --stress "D:\path\stress.pdf" --repeats 3
+```
+
 Build the single-file Windows executable with:
 
 ```powershell
@@ -160,6 +171,10 @@ Build the single-file Windows executable with:
 ```
 
 The result is written to `dist\PDF_Size_Reducer.exe`.
+
+Use `PDF_Size_Reducer.exe --workflow-self-test` for a headless packaged smoke
+test of the real spawned merge and compression jobs (exit code 0 means success).
+This complements `--native-worker-self-test`, which only checks worker discovery.
 
 ## Project structure
 

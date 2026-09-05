@@ -1,5 +1,39 @@
 # Current benchmark results
 
+## v3.9 workflow regression and scan optimization
+
+Measured on 2026-09-05 with Python 3.12.10, PyMuPDF 1.28.2, and the same
+20-logical-CPU Windows 11 machine. Baseline: v3.8.0 commit `30a8953` with its
+own native binaries; current: v3.9.0 with the rebuilt guarded worker. Three
+alternating baseline/current repetitions were performed for each case.
+
+| Case | v3.8 median | v3.9 median | Interpretation |
+|---|---:|---:|---|
+| 97.92 MiB / 48-page asset scan | 5.471 s | **3.421 s** | **1.60× faster; about 37.5% less time** |
+| Guarded merge of two 24-page halves | 1.494 s | 1.496 s | Essentially unchanged |
+| Merge two 400-link documents | 0.575 s | 0.581 s | Essentially unchanged |
+| Six-page compression to 70% of input size | 39.562 s | 39.542 s | Essentially unchanged |
+
+The stress input SHA-256 is
+`c0481f39fe607c42e66e30e36266fe8440cbbe518fce38a48670ce9b1e851214`.
+All asset records matched; merged page text and all 800 test links were retained.
+Every compressed output was 7,765,099 bytes against a 7,767,964-byte target,
+preserved native text, and had identical 72-DPI page-render hashes across both
+versions. This compression case completed through the ordinary bitmap path
+without using the native Figure planner, so it is not a new native-planner
+speed measurement. The historical Automatica corpus was not available for
+this run; the 17.889× result below is historical, not a fresh v3.9 claim.
+
+See [per-run data](workflow-v3.9.0.json) and
+[`tools/benchmark_workflow.py`](../tools/benchmark_workflow.py). These are
+fixture-specific, warm-session measurements, not guarantees for every PDF.
+The 72-DPI comparison is a regression check, not a full-resolution quality
+assessment. Additional tests cover editable forms, rotated/overlapping links,
+invalid small inputs, lossless early exit, subprocess failure cleanup, and
+cooperative cancellation. All 63 Python tests and 5 Rust tests passed.
+
+## Historical v3.3.1–v3.5 compression planner benchmark
+
 Measured on 2026-09-03 with Python 3.12.10, PyMuPDF 1.28.2, Pillow
 12.3.0, and a 20-logical-CPU Windows 11 machine. The fixed-corpus SHA-256
 values matched [`baseline-v3.3.1.json`](baseline-v3.3.1.json).

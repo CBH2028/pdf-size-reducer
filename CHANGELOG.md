@@ -2,6 +2,31 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.9.0 - 2026-09-05
+
+### Reliability and document preservation
+
+- Preserve editable AcroForm fields when merging PDFs. Form-containing inputs automatically use the form-aware compatibility merger; the C++ backend also rejects unsupported forms instead of silently discarding fields.
+- Correct ordinary link rectangles and internal destinations on rotated pages in native merges, and retain overlapping links with distinct targets.
+- Validate already-small inputs before copying them to the destination. Invalid, empty, non-PDF, and password-protected inputs can no longer bypass PDF validation through the size shortcut.
+- Fall back cleanly when the operating system cannot start the native worker or native navigation repair fails. Merge progress stays monotonic during fallback, and failed native handshakes close their subprocesses and pipes.
+- Repeat native merge input-size limits in Python and C++ in addition to the Rust guard.
+
+### Workflow and performance
+
+- Run desktop compression in a separate spawned process, matching the merge workflow. Both writers share cooperative cancellation, crash reporting, and bounded shutdown after a terminal result.
+- Avoid extracting image payloads when reading Figure captions, reuse image information already collected during Figure detection, and use compact native drawing records.
+- On the fixed 97.92 MiB / 48-page fixture, median scanning time fell from 5.471 to 3.421 seconds (1.60× faster, about 37.5% less time) over three alternating runs per version, with identical asset records. Merge and six-page bitmap compression times were essentially unchanged.
+- Attempt lossless optimization before scanning compression candidates. Do not parse explicitly unselected vector pages or collect explicitly unselected standalone images; preserve original xrefs while checking lossless output.
+- Add a repeatable, alternating v3.8/v3.9 workflow benchmark with content and target-size gates. Results and measurement scope are recorded in `benchmarks/RESULTS.md`; the historical 17.889× compression improvement belongs to v3.5 versus v3.3.1, not this update.
+
+### Verification
+
+- Add regression coverage for the above data-preservation and failure paths, plus process isolation and cancellation.
+- Add `--workflow-self-test` to verify guarded merging followed by compression in both source and frozen executable builds.
+- All 63 Python regression tests and 5 Rust unit tests passed.
+- The packaged Windows executable passed native-worker discovery and the spawned merge/lossless-compression smoke test.
+
 ## 3.8.0 - 2026-09-05
 
 ### Added

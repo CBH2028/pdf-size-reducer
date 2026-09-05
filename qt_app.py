@@ -93,7 +93,7 @@ from native_worker import find_native_worker
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.8.0"
+APP_VERSION = "3.9.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -1590,6 +1590,85 @@ class ThumbnailWorker(QObject):
             self._process_cancel_event = None
 
 
+def _run_pdf_process(worker, target, arguments: tuple, name: str) -> None:
+    """Monitor a writer outside Qt while retaining cooperative cancellation."""
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    process_cancel = context.Event()
+    process = context.Process(
+        target=target,
+        args=(*arguments, result_queue, process_cancel),
+        name=name,
+        daemon=True,
+    )
+    started = False
+    try:
+        if worker.cancel_event.is_set():
+            worker.cancelled.emit()
+            return
+        process.start()
+        started = True
+        exited_at = None
+        while True:
+            if worker.cancel_event.is_set():
+                process_cancel.set()
+            try:
+                kind, *payload = result_queue.get(timeout=0.05)
+            except queue.Empty:
+                if not process.is_alive():
+                    if exited_at is None:
+                        exited_at = time.monotonic()
+                    elif time.monotonic() - exited_at > 0.5:
+                        if worker.cancel_event.is_set():
+                            worker.cancelled.emit()
+                        else:
+                            worker.failed.emit("PDF 后台处理进程意外结束。")
+                        break
+                continue
+            if kind == "progress":
+                worker.progress.emit(int(payload[0]), str(payload[1]))
+            elif kind == "completed":
+                worker.completed.emit(payload[0])
+                break
+            elif kind == "cancelled":
+                worker.cancelled.emit()
+                break
+            elif kind == "failed":
+                worker.failed.emit(str(payload[0]))
+                break
+    except Exception as exc:
+        worker.failed.emit(f"后台处理失败：{exc}")
+    finally:
+        process_cancel.set()
+        if started:
+            # A terminal message is sent only after the operation has closed
+            # its native session and settled atomic output installation.
+            process.join(timeout=3)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
+            if not process.is_alive():
+                process.close()
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def _compression_process(source, destination, target, options, result_queue, cancel_event):
+    try:
+        result = compress_pdf(
+            source, destination, target,
+            progress_callback=lambda value, message: result_queue.put(("progress", value, message)),
+            cancel_event=cancel_event,
+            **options,
+        )
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        result_queue.put(("completed", result))
+
+
 class CompressionWorker(QObject):
     progress = Signal(int, str)
     completed = Signal(object)
@@ -1619,31 +1698,15 @@ class CompressionWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        try:
-            result = compress_pdf(
-                self.source,
-                self.destination,
-                self.target,
-                progress_callback=lambda value, message: self.progress.emit(
-                    value, message
-                ),
-                cancel_event=self.cancel_event,
-                selected_image_xrefs=self.image_xrefs,
-                selected_vector_pages=self.vector_pages,
-                selected_figure_regions=self.figure_regions,
-            )
-        except CompressionCancelled:
-            self.cancelled.emit()
-        except (
-            TargetTooSmallError,
-            NoCompressibleImagesError,
-            CompressionError,
-        ) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(f"处理失败：{exc}")
-        else:
-            self.completed.emit(result)
+        options = {
+            "selected_image_xrefs": self.image_xrefs,
+            "selected_vector_pages": self.vector_pages,
+            "selected_figure_regions": self.figure_regions,
+        }
+        _run_pdf_process(
+            self, _compression_process,
+            (self.source, self.destination, self.target, options), "PDFCompressor",
+        )
 
 
 def _merge_process(sources, destination, result_queue, cancel_event) -> None:
@@ -1682,57 +1745,9 @@ class MergeWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        context = multiprocessing.get_context("spawn")
-        result_queue = context.Queue()
-        process_cancel = context.Event()
-        process = context.Process(
-            target=_merge_process,
-            args=(self.sources, self.destination, result_queue, process_cancel),
-            name="PDFMerger",
-            daemon=True,
+        _run_pdf_process(
+            self, _merge_process, (self.sources, self.destination), "PDFMerger"
         )
-        started = False
-        try:
-            if self.cancel_event.is_set():
-                self.cancelled.emit()
-                return
-            process.start()
-            started = True
-            exited_at = None
-            while True:
-                if self.cancel_event.is_set():
-                    process_cancel.set()
-                try:
-                    kind, *payload = result_queue.get(timeout=0.05)
-                except queue.Empty:
-                    if not process.is_alive():
-                        if exited_at is None:
-                            exited_at = time.monotonic()
-                        elif time.monotonic() - exited_at > 0.5:
-                            self.failed.emit("PDF 合并进程意外结束。")
-                            break
-                    continue
-                if kind == "progress":
-                    self.progress.emit(int(payload[0]), str(payload[1]))
-                elif kind == "completed":
-                    self.completed.emit(payload[0])
-                    break
-                elif kind == "cancelled":
-                    self.cancelled.emit()
-                    break
-                elif kind == "failed":
-                    self.failed.emit(str(payload[0]))
-                    break
-        except Exception as exc:
-            self.failed.emit(f"合并失败：{exc}")
-        finally:
-            # Cooperative cancellation lets the writer remove temporary files
-            # and report whether atomic installation already completed.
-            process_cancel.set()
-            if started:
-                process.join()
-            result_queue.close()
-            result_queue.join_thread()
 
 
 class PreviewRenderWorker(QObject):
@@ -3326,9 +3341,56 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+def _workflow_self_test() -> int:
+    """Exercise the real spawned writers in source and frozen Windows builds."""
+    import tempfile
+    import pymupdf as fitz
+
+    with tempfile.TemporaryDirectory(prefix="pdf-workflow-self-test-") as directory:
+        workspace = Path(directory)
+        sources = [workspace / "first.pdf", workspace / "second.pdf"]
+        for index, path in enumerate(sources):
+            with fitz.open() as document:
+                document.new_page().insert_text((40, 40), f"Workflow test {index}")
+                document.save(path)
+        merged = workspace / "merged.pdf"
+        compressed = workspace / "compressed.pdf"
+        results, failures = [], []
+        merger = MergeWorker(sources, merged)
+        merger.completed.connect(results.append)
+        merger.failed.connect(failures.append)
+        merger.cancelled.connect(lambda: failures.append("Unexpected cancellation"))
+        merger.run()
+        if failures or len(results) != 1 or not results[0].native_worker_used:
+            return 9
+        # Extra legal whitespace makes the compression child exercise the
+        # actual lossless writer rather than the already-small copy branch.
+        original_size = merged.stat().st_size
+        with merged.open("ab") as stream:
+            stream.write(b"\n" * 50000)
+        compressor_worker = CompressionWorker(
+            merged, compressed, original_size + 10000, set(), set(), {}
+        )
+        compressor_worker.completed.connect(results.append)
+        compressor_worker.failed.connect(failures.append)
+        compressor_worker.cancelled.connect(lambda: failures.append("Unexpected cancellation"))
+        compressor_worker.run()
+        if failures or len(results) != 2 or results[-1].method != "lossless":
+            return 10
+        with fitz.open(compressed) as document:
+            if document.page_count != 2 or any(
+                f"Workflow test {index}" not in document[index].get_text()
+                for index in range(2)
+            ):
+                return 11
+    return 0
+
+
 def main() -> None:
     if "--native-worker-self-test" in sys.argv:
         raise SystemExit(0 if find_native_worker() is not None else 8)
+    if "--workflow-self-test" in sys.argv:
+        raise SystemExit(_workflow_self_test())
     if sys.platform.startswith("win"):
         try:
             from ctypes import windll

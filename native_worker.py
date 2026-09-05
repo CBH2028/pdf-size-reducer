@@ -1,4 +1,4 @@
-"""Python bridge for the optional C++ Figure-rendering worker."""
+"""Python bridge for guarded native rendering and PDF merging."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ MAX_NATIVE_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_RESPONSE_LINE_BYTES = 64 * 1024
 DEFAULT_BATCH_TIMEOUT_SECONDS = 900
 MAX_NATIVE_MERGE_SOURCES = 100
+MAX_NATIVE_PDF_BYTES = 4 * 1024**3
 MAX_NATIVE_MERGE_OUTPUT_BYTES = 16 * 1024**3
 ProgressCallback = Callable[[int, int], None]
 
@@ -93,6 +94,14 @@ def _worker_environment(worker_directory: Path) -> dict[str, str]:
     if memory_limit:
         environment["PDF_SIZE_REDUCER_WORKER_MEMORY_MIB"] = memory_limit
     return environment
+
+
+def _start_worker(*args, **kwargs):
+    """Translate OS launch failures into the documented fallback signal."""
+    try:
+        return subprocess.Popen(*args, **kwargs)
+    except OSError as exc:
+        raise NativeWorkerError(f"Unable to start the native worker: {exc}") from exc
 
 
 def _strict_int(value: object, label: str) -> int:
@@ -308,7 +317,7 @@ class NativeWorkerSession:
             str(self.workspace),
         ]
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        self.process = subprocess.Popen(
+        self.process = _start_worker(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -331,10 +340,13 @@ class NativeWorkerSession:
             daemon=True,
         )
         self.reader.start()
-        hello = self._wait_for_response("hello", timeout=8)
-        if hello.get("protocol") != PROTOCOL_VERSION:
+        try:
+            hello = self._wait_for_response("hello", timeout=8)
+            if hello.get("protocol") != PROTOCOL_VERSION:
+                raise NativeWorkerError("C++ worker protocol mismatch.")
+        except BaseException:
             self.close(force=True)
-            raise NativeWorkerError("C++ worker protocol mismatch.")
+            raise
 
     def _wait_for_response(
         self,
@@ -534,9 +546,9 @@ class NativeWorkerSession:
         )
 
     def close(self, *, force: bool = False) -> None:
-        if not hasattr(self, "process") or self.process.poll() is not None:
+        if not hasattr(self, "process"):
             return
-        if not force and self.process.stdin is not None:
+        if not force and self.process.poll() is None and self.process.stdin is not None:
             try:
                 self.process.stdin.write("QUIT\n")
                 self.process.stdin.flush()
@@ -551,6 +563,12 @@ class NativeWorkerSession:
                 self.process.kill()
                 self.process.wait(timeout=2)
         self.reader.join(timeout=1)
+        for stream in (self.process.stdin, self.process.stdout):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
     def __enter__(self) -> NativeWorkerSession:
         return self
@@ -591,10 +609,15 @@ def _write_merge_manifest(
     if not 2 <= len(input_paths) <= MAX_NATIVE_MERGE_SOURCES:
         raise NativeWorkerError("Native merge requires 2 to 100 PDF files.")
     rows = []
+    total_bytes = 0
     for index, path in enumerate(input_paths):
         resolved = path.resolve()
         if not resolved.is_file() or resolved.suffix.lower() != ".pdf":
             raise NativeWorkerError(f"Invalid native merge input: {path.name}")
+        source_bytes = resolved.stat().st_size
+        total_bytes += source_bytes
+        if source_bytes > MAX_NATIVE_PDF_BYTES or total_bytes > MAX_NATIVE_MERGE_OUTPUT_BYTES:
+            raise NativeWorkerError("Native merge input exceeds the safety size limits.")
         value = str(resolved)
         if "\t" in value or "\n" in value or "\r" in value:
             raise NativeWorkerError(
@@ -605,8 +628,8 @@ def _write_merge_manifest(
     try:
         with manifest.open("x", encoding="utf-8", newline="\n") as output:
             output.write("\n".join(rows) + "\n")
-    except FileExistsError as exc:
-        raise NativeWorkerError("Native merge manifest already exists.") from exc
+    except OSError as exc:
+        raise NativeWorkerError(f"Unable to create native merge manifest: {exc}") from exc
     return manifest
 
 
@@ -619,6 +642,8 @@ def merge_pdf_pages_native(
     progress_callback: ProgressCallback | None = None,
 ) -> NativeMergeResult:
     """Merge PDF pages through the guarded native MuPDF backend."""
+    if cancel_event is not None and cancel_event.is_set():
+        raise NativeWorkerCancelled("Native PDF merge was cancelled.")
     worker = find_native_worker()
     if worker is None:
         raise NativeWorkerError(
@@ -647,7 +672,7 @@ def merge_pdf_pages_native(
         str(work_directory),
     ]
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    process = subprocess.Popen(
+    process = _start_worker(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -737,7 +762,7 @@ def merge_pdf_pages_native(
         page_count = _strict_int(response.get("pages"), "merge page count")
         output_bytes = _strict_int(response.get("bytes"), "merge output size")
         elapsed_ms = _strict_int(response.get("elapsed_ms"), "merge elapsed time")
-        if source_count != len(sources) or page_count < source_count:
+        if source_count != len(sources) or page_count < source_count or elapsed_ms < 0:
             raise NativeWorkerError(
                 "Native PDF merge completion metadata did not match the request."
             )
@@ -765,6 +790,8 @@ def merge_pdf_pages_native(
             output_bytes,
             elapsed_ms / 1000,
         )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise NativeWorkerError(f"Native PDF merge failed: {exc}") from exc
     finally:
         if process.poll() is None:
             process.terminate()
@@ -774,3 +801,4 @@ def merge_pdf_pages_native(
                 process.kill()
                 process.wait(timeout=2)
         reader.join(timeout=1)
+        process.stdout.close()

@@ -80,3 +80,9 @@ backend grafts pages and copyable annotations; Python then restores metadata,
 bookmarks, and ordinary page links before validating and atomically installing
 the result. If any layer rejects the request, the application can use its tested
 Python/PyMuPDF fallback.
+
+Interactive AcroForm fields require the form-aware Python/PyMuPDF merger.
+The desktop workflow detects these inputs before starting the native merge;
+the backend also rejects them independently instead of silently dropping fields.
+Protocol 3 remains unchanged. Per-source (4 GiB) and aggregate (16 GiB) input
+limits are checked in Python, Rust, and C++.

@@ -33,6 +33,8 @@ constexpr int kProtocolVersion = 3;
 constexpr int kMaximumThreads = 12;
 constexpr size_t kMaximumTasks = 4096;
 constexpr size_t kMaximumMergeSources = 100;
+constexpr uintmax_t kMaximumInputPdfBytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+constexpr uintmax_t kMaximumMergeTotalBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr uintmax_t kMaximumManifestBytes = 8ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumManifestLineBytes = 1024;
 constexpr size_t kMaximumMergeLineBytes = 32ULL * 1024ULL;
@@ -242,6 +244,7 @@ std::vector<MergeSource> read_merge_manifest(const fs::path& path) {
         throw std::runtime_error("Unable to open merge manifest.");
     }
     std::vector<MergeSource> sources;
+    uintmax_t total_bytes = 0;
     std::string line;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -266,6 +269,12 @@ std::vector<MergeSource> read_merge_manifest(const fs::path& path) {
         if (!fs::is_regular_file(source.path)) {
             throw std::runtime_error("Merge input is not a regular file.");
         }
+        const uintmax_t source_bytes = fs::file_size(source.path);
+        if (source_bytes > kMaximumInputPdfBytes ||
+            source_bytes > kMaximumMergeTotalBytes - total_bytes) {
+            throw std::runtime_error("Merge inputs exceed the safety size limits.");
+        }
+        total_bytes += source_bytes;
         std::string extension = source.path.extension().string();
         std::transform(
             extension.begin(), extension.end(), extension.begin(),
@@ -691,6 +700,13 @@ int merge_documents(
         mupdf::PdfDocument source(source_utf8.c_str());
         if (source.pdf_needs_password()) {
             throw std::runtime_error("Merge input is password protected.");
+        }
+        const mupdf::PdfObj fields = source.pdf_trailer()
+            .pdf_dict_gets("Root").pdf_dict_gets("AcroForm")
+            .pdf_dict_gets("Fields");
+        if (fields.pdf_array_len() > 0) {
+            throw std::runtime_error(
+                "Interactive forms require the form-preserving compatibility merger.");
         }
         const int page_count = source.pdf_count_pages();
         if (page_count <= 0) {

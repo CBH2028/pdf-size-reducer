@@ -27,3 +27,26 @@ reference, and stress-file hashes against the saved baseline. This prevents a
 different PDF from being presented as a valid before/after comparison.
 
 See [the latest checked result](RESULTS.md).
+
+## Workflow comparison (v3.9 and later)
+
+`tools/benchmark_workflow.py` does not require the private Automatica corpus.
+It compares two checkouts using one stress PDF, alternating baseline/current
+order over three repetitions to reduce cache and ordering bias. Build each
+checkout's own native worker first; do not point both versions at a shared
+worker override.
+
+```powershell
+.\.venv\Scripts\python.exe tools\benchmark_workflow.py `
+    --baseline "D:\path\v3.8-checkout" `
+    --stress "dist\PDF_Size_Reducer_Stress_Demo_97.92MB.pdf" --repeats 3
+```
+
+The cases are asset scanning, guarded merging of the two halves of the input,
+merging two generated 400-link documents, and compression of the first six
+pages to 70% of their saved input size. Reports go under
+`build/benchmarks/v3.9-workflow/` and include per-run times, medians, file hashes,
+and environment details. The script checks identical asset records, merged
+text and link counts, exact text preservation, target-size compliance, and
+matching compressed 72-DPI page renders. These are regression gates, not a
+substitute for full-resolution visual inspection or the PSNR/edge suite above.
