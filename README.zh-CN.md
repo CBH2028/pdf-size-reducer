@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-33%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-48%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -55,6 +55,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 
 | 功能 | 说明 |
 | --- | --- |
+| 合并后压缩 | 按指定顺序合并最多 100 个 PDF，并将合并结果载入可视化工作区继续定容压缩。 |
 | 精确定容 | 输入 MB 或 KB，自动寻找不超过目标大小且尽可能清晰的结果，不靠填充无意义字节伪造体积。 |
 | 最小损失 | 首先尝试无损优化；只有达不到目标时才降低所选图片或 Figure 的数据量。 |
 | 完整 Figure 识别 | 根据 `Fig. X`、`Figure X` 或 `图 X` 图注，把位图、矢量线条、箭头和文字组成的论文插图视为一个项目。 |
@@ -95,6 +96,17 @@ py -3 -m venv .venv
 6. 提交前浏览输出 PDF；若某张 PPT 矢量图出现黑底，取消勾选它后重新处理。
 
 原 PDF 始终保持不变。如果输出文件已存在，程序会先询问是否覆盖。
+
+### 合并 PDF 并压缩结果
+
+1. 点击“合并多个 PDF”，或一次将多个 PDF 拖入窗口；
+2. 添加文件，通过拖动或“上移 / 下移”调整合并顺序，移除不需要的文件；
+3. 选择合并文件的保存位置，保留“合并完成后载入压缩工作区”勾选，点击“开始合并”；
+4. 合并文件读取完成后，预览并勾选 Figure，设置 MB 或 KB 目标，点击“开始智能压缩”。压缩结果另存，合并文件也会保留。
+
+如果只需合并，取消“载入压缩工作区”勾选即可。合并在独立进程中执行并支持取消，完整结果经过页数和页面读取校验后才写入最终位置。页面文字、尺寸、旋转、普通页面链接、批注和书签目标会保留；受密码保护的文件需要先解密。
+
+合并以页面为单位，不保证保留文档级附件、PDF 文件包、数字签名和命名目标。合并文件的基本元数据取自第一份 PDF。
 
 ## 工作原理
 

@@ -106,6 +106,21 @@ class CompressionResult:
 
 
 @dataclass(frozen=True)
+class MergeResult:
+    """Summary of a successfully merged PDF."""
+
+    input_paths: tuple[Path, ...]
+    output_path: Path
+    input_bytes: int
+    output_bytes: int
+    page_count: int
+
+    @property
+    def source_count(self) -> int:
+        return len(self.input_paths)
+
+
+@dataclass(frozen=True)
 class PDFAsset:
     """One user-selectable paper figure, bitmap, or page vector layer."""
 
@@ -2314,6 +2329,166 @@ def _compress_candidate(
 def _atomic_install(candidate: Path, output_path: Path) -> None:
     """Install a completed candidate without leaving a partial result."""
     os.replace(candidate, output_path)
+
+
+def merge_pdfs(
+    input_paths: list[str | Path] | tuple[str | Path, ...],
+    output_path: str | Path,
+    progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
+) -> MergeResult:
+    """Merge PDFs in order and atomically install a validated result.
+
+    Source files are opened read-only and never modified. The destination is
+    replaced only after every input has been read and the completed PDF has
+    been opened again successfully.
+    """
+    sources = tuple(Path(path).expanduser().resolve() for path in input_paths)
+    destination = Path(output_path).expanduser().resolve()
+
+    if len(sources) < 2:
+        raise CompressionError("请至少选择两个 PDF 文件进行合并。")
+    if len(sources) > 100:
+        raise CompressionError("一次最多可合并 100 个 PDF 文件。")
+    if destination.suffix.lower() != ".pdf":
+        raise CompressionError("合并结果必须保存为 PDF 文件。")
+    for source_path in sources:
+        if not source_path.is_file():
+            raise CompressionError(f"找不到源文件：{source_path}")
+        if source_path.suffix.lower() != ".pdf":
+            raise CompressionError(f"所选文件不是 PDF：{source_path.name}")
+        if source_path == destination:
+            raise CompressionError("合并结果不能覆盖任何源 PDF。")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    input_bytes = sum(path.stat().st_size for path in sources)
+    _notify(progress_callback, 1, "正在检查待合并的 PDF…")
+    _check_cancel(cancel_event)
+
+    with tempfile.TemporaryDirectory(
+        prefix=".pdf_size_reducer_merge_", dir=destination.parent
+    ) as temporary_directory:
+        candidate = Path(temporary_directory) / "merged.pdf"
+        merged = fitz.open()
+        combined_toc: list[list[object]] = []
+        page_offset = 0
+        first_metadata: dict[str, str] | None = None
+        try:
+            for index, source_path in enumerate(sources, start=1):
+                _check_cancel(cancel_event)
+                _notify(
+                    progress_callback,
+                    5 + round(72 * (index - 1) / len(sources)),
+                    f"正在合并 {index}/{len(sources)}：{source_path.name}",
+                )
+                try:
+                    source = fitz.open(source_path)
+                except (RuntimeError, ValueError) as exc:
+                    raise CompressionError(
+                        f"无法打开 {source_path.name}：{exc}"
+                    ) from exc
+                try:
+                    if source.needs_pass:
+                        raise PasswordProtectedPDF(
+                            f"{source_path.name} 受密码保护，请先解密后再合并。"
+                        )
+                    if source.page_count == 0:
+                        raise CompressionError(
+                            f"{source_path.name} 中没有可合并的页面。"
+                        )
+                    if first_metadata is None:
+                        first_metadata = {
+                            key: str(value)
+                            for key, value in source.metadata.items()
+                            if value
+                        }
+                    for level, title, page_number, details in source.get_toc(False):
+                        adjusted_page = (
+                            page_number + page_offset if page_number > 0 else page_number
+                        )
+                        details = dict(details)
+                        details.pop("xref", None)
+                        if details.get("kind") == fitz.LINK_GOTO:
+                            details["page"] += page_offset
+                        combined_toc.append([level, title, adjusted_page, details])
+                    merged.insert_pdf(source)
+                    page_offset += source.page_count
+                except CompressionError:
+                    raise
+                except (RuntimeError, ValueError) as exc:
+                    raise CompressionError(
+                        f"读取 {source_path.name} 时失败：{exc}"
+                    ) from exc
+                finally:
+                    source.close()
+
+            _check_cancel(cancel_event)
+            if first_metadata:
+                allowed_metadata = {
+                    "title",
+                    "author",
+                    "subject",
+                    "keywords",
+                    "creator",
+                    "producer",
+                    "creationDate",
+                    "modDate",
+                    "trapped",
+                }
+                merged.set_metadata(
+                    {
+                        key: value
+                        for key, value in first_metadata.items()
+                        if key in allowed_metadata
+                    }
+                )
+            if combined_toc:
+                merged.set_toc(combined_toc)
+            _notify(progress_callback, 82, "正在优化并写入合并结果…")
+            merged.save(
+                candidate,
+                garbage=4,
+                deflate=True,
+                deflate_images=True,
+                deflate_fonts=True,
+                use_objstms=1,
+            )
+        finally:
+            merged.close()
+
+        _check_cancel(cancel_event)
+        _notify(progress_callback, 94, "正在校验合并结果…")
+        try:
+            with fitz.open(candidate) as validation:
+                if validation.needs_pass:
+                    raise CompressionError("合并结果意外受到密码保护。")
+                if validation.page_count != page_offset:
+                    raise CompressionError(
+                        "合并结果页数校验失败，未写入最终文件。"
+                    )
+                for page in validation:
+                    _check_cancel(cancel_event)
+                    _ = page.rect
+        except CompressionError:
+            raise
+        except (RuntimeError, ValueError) as exc:
+            raise CompressionError(f"合并结果校验失败：{exc}") from exc
+
+        _check_cancel(cancel_event)
+        _atomic_install(candidate, destination)
+        result = MergeResult(
+            sources,
+            destination,
+            input_bytes,
+            destination.stat().st_size,
+            page_offset,
+        )
+        _notify(
+            progress_callback,
+            100,
+            f"合并完成：{result.page_count} 页",
+        )
+        return result
 
 
 def compress_pdf(

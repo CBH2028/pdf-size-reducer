@@ -2,6 +2,27 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.7.0 - 2026-09-05
+
+### Added
+
+- Merge up to 100 PDFs in a dedicated dialog, with multi-file selection, duplicate filtering, drag-to-reorder, move up/down, removal, and a configurable output path.
+- Drop multiple PDFs onto the main window to open the merge workflow.
+- Load the merged result directly into the existing visual compression workspace by default. Review Figures, set a size target, and save a separate compressed PDF; merge-only operation is also available.
+- Preserve page order, text, geometry, ordinary page links, annotations, and detailed bookmark destinations, with page offsets adjusted for the combined document.
+
+### Reliability
+
+- Run PDF merging in an isolated background process with progress updates and cooperative cancellation.
+- Validate the completed candidate before atomically installing it; cancelled or failed merges leave existing output and source files unchanged.
+- Reject source-file overwrite, unreadable inputs, password-protected PDFs, and invalid file counts.
+- Prevent overlapping file operations and wait for background tasks to finish cancelling before closing the window.
+
+### Testing
+
+- Added 15 regression cases covering order, bookmarks and links, metadata, page geometry, invalid inputs, cancellation at multiple stages, output preservation, dialog ordering, and the complete Qt merge-then-compress workflow.
+- All 48 Python regression tests passed.
+
 ## 3.6.0 - 2026-09-04
 
 ### 安全

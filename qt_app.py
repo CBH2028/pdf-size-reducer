@@ -43,6 +43,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -58,6 +59,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -75,6 +78,7 @@ from compressor import (
     CompressionCancelled,
     CompressionError,
     CompressionResult,
+    MergeResult,
     NoCompressibleImagesError,
     PDFAsset,
     TargetTooSmallError,
@@ -82,13 +86,14 @@ from compressor import (
     format_bytes,
     iter_asset_thumbnails,
     list_pdf_assets,
+    merge_pdfs,
     render_asset_image,
 )
 from native_worker import find_native_worker
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.6.0"
+APP_VERSION = "3.7.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -1641,6 +1646,95 @@ class CompressionWorker(QObject):
             self.completed.emit(result)
 
 
+def _merge_process(sources, destination, result_queue, cancel_event) -> None:
+    """Keep PDF parsing and copying outside the UI process."""
+    try:
+        result = merge_pdfs(
+            sources,
+            destination,
+            progress_callback=lambda value, message: result_queue.put(
+                ("progress", value, message)
+            ),
+            cancel_event=cancel_event,
+        )
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        result_queue.put(("completed", result))
+
+
+class MergeWorker(QObject):
+    progress = Signal(int, str)
+    completed = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, sources: list[Path], destination: Path) -> None:
+        super().__init__()
+        self.sources = sources
+        self.destination = destination
+        self.cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    @Slot()
+    def run(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        result_queue = context.Queue()
+        process_cancel = context.Event()
+        process = context.Process(
+            target=_merge_process,
+            args=(self.sources, self.destination, result_queue, process_cancel),
+            name="PDFMerger",
+            daemon=True,
+        )
+        started = False
+        try:
+            if self.cancel_event.is_set():
+                self.cancelled.emit()
+                return
+            process.start()
+            started = True
+            exited_at = None
+            while True:
+                if self.cancel_event.is_set():
+                    process_cancel.set()
+                try:
+                    kind, *payload = result_queue.get(timeout=0.05)
+                except queue.Empty:
+                    if not process.is_alive():
+                        if exited_at is None:
+                            exited_at = time.monotonic()
+                        elif time.monotonic() - exited_at > 0.5:
+                            self.failed.emit("PDF 合并进程意外结束。")
+                            break
+                    continue
+                if kind == "progress":
+                    self.progress.emit(int(payload[0]), str(payload[1]))
+                elif kind == "completed":
+                    self.completed.emit(payload[0])
+                    break
+                elif kind == "cancelled":
+                    self.cancelled.emit()
+                    break
+                elif kind == "failed":
+                    self.failed.emit(str(payload[0]))
+                    break
+        except Exception as exc:
+            self.failed.emit(f"合并失败：{exc}")
+        finally:
+            # Cooperative cancellation lets the writer remove temporary files
+            # and report whether atomic installation already completed.
+            process_cancel.set()
+            if started:
+                process.join()
+            result_queue.close()
+            result_queue.join_thread()
+
+
 class PreviewRenderWorker(QObject):
     completed = Signal(object)
     failed = Signal(str)
@@ -1810,6 +1904,252 @@ class PreviewDialog(QDialog):
         self.status.setStyleSheet(f"color: {ERROR};")
 
 
+class PDFMergeDialog(QDialog):
+    """Collect and order PDFs before starting an asynchronous merge."""
+
+    def __init__(
+        self,
+        parent: QWidget,
+        initial_paths: list[Path] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("合并多个 PDF")
+        self.setWindowIcon(make_app_icon())
+        self.resize(760, 610)
+        self.setMinimumSize(620, 500)
+        self.setModal(True)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 20)
+        root.setSpacing(13)
+
+        title = QLabel("合并多个 PDF")
+        title.setProperty("title", True)
+        root.addWidget(title)
+        description = QLabel(
+            "文件将按列表顺序合并。可拖动排序；源文件不会被修改。"
+        )
+        description.setProperty("secondary", True)
+        description.setWordWrap(True)
+        root.addWidget(description)
+
+        file_actions = QHBoxLayout()
+        file_actions.setSpacing(8)
+        add_button = QPushButton("＋ 添加 PDF")
+        add_button.clicked.connect(self._choose_files)
+        self.remove_button = QPushButton("移除")
+        self.remove_button.setProperty("quiet", True)
+        self.remove_button.clicked.connect(self._remove_selected)
+        self.up_button = QPushButton("上移")
+        self.up_button.setProperty("quiet", True)
+        self.up_button.clicked.connect(lambda: self._move_selected(-1))
+        self.down_button = QPushButton("下移")
+        self.down_button.setProperty("quiet", True)
+        self.down_button.clicked.connect(lambda: self._move_selected(1))
+        file_actions.addWidget(add_button)
+        file_actions.addWidget(self.remove_button)
+        file_actions.addWidget(self.up_button)
+        file_actions.addWidget(self.down_button)
+        file_actions.addStretch(1)
+        self.count_label = QLabel("0 个文件")
+        self.count_label.setProperty("secondary", True)
+        file_actions.addWidget(self.count_label)
+        root.addLayout(file_actions)
+
+        self.file_list = QListWidget()
+        self.file_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.file_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.file_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.file_list.setAlternatingRowColors(True)
+        self.file_list.currentRowChanged.connect(self._update_controls)
+        self.file_list.itemSelectionChanged.connect(self._update_controls)
+        root.addWidget(self.file_list, 1)
+
+        output_label = QLabel("合并结果")
+        output_label.setObjectName("cardTitle")
+        root.addWidget(output_label)
+        output_row = QHBoxLayout()
+        output_row.setSpacing(8)
+        self.output_edit = QLineEdit()
+        self.output_edit.setReadOnly(True)
+        self.output_edit.setPlaceholderText("请选择合并结果的保存位置")
+        output_button = QPushButton("选择…")
+        output_button.setProperty("quiet", True)
+        output_button.clicked.connect(self._choose_output)
+        output_row.addWidget(self.output_edit, 1)
+        output_row.addWidget(output_button)
+        root.addLayout(output_row)
+
+        self.load_after_checkbox = QCheckBox(
+            "合并完成后载入压缩工作区（推荐）"
+        )
+        self.load_after_checkbox.setChecked(True)
+        self.load_after_checkbox.setToolTip(
+            "合并后可继续设置目标大小、预览 Figure 并执行定容压缩。"
+        )
+        root.addWidget(self.load_after_checkbox)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        cancel_button = QPushButton("取消")
+        cancel_button.setProperty("quiet", True)
+        cancel_button.clicked.connect(self.reject)
+        merge_button = QPushButton("开始合并")
+        merge_button.setObjectName("mergeConfirmButton")
+        merge_button.clicked.connect(self._validate_and_accept)
+        button_row.addWidget(cancel_button)
+        button_row.addWidget(merge_button)
+        root.addLayout(button_row)
+
+        self.setStyleSheet(
+            f"""
+            QListWidget {{
+                background: {CARD};
+                border: 1px solid {BORDER};
+                border-radius: 12px;
+                padding: 6px;
+                font-size: 12px;
+            }}
+            QListWidget::item {{
+                padding: 9px 8px;
+                border-radius: 7px;
+            }}
+            QListWidget::item:selected {{
+                background: #ECEAFF;
+                color: {TEXT};
+            }}
+            QPushButton#mergeConfirmButton {{
+                color: white;
+                background: {ACCENT};
+                border: none;
+                border-radius: 9px;
+                padding: 9px 18px;
+                font-weight: 700;
+            }}
+            QPushButton#mergeConfirmButton:hover {{ background: {ACCENT_HOVER}; }}
+            """
+        )
+
+        self.add_paths(initial_paths or [])
+        self._update_controls()
+
+    def add_paths(self, paths: list[Path]) -> None:
+        existing = {
+            os.path.normcase(str(path.resolve())) for path in self.source_paths()
+        }
+        for raw_path in paths:
+            path = Path(raw_path).expanduser().resolve()
+            key = os.path.normcase(str(path))
+            if (
+                key in existing
+                or not path.is_file()
+                or path.suffix.lower() != ".pdf"
+            ):
+                continue
+            if self.file_list.count() >= 100:
+                QMessageBox.warning(
+                    self,
+                    APP_NAME,
+                    "一次最多可合并 100 个 PDF 文件。",
+                )
+                break
+            item = QListWidgetItem(
+                f"{path.name}\n{format_bytes(path.stat().st_size)}  ·  {path.parent}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            item.setToolTip(str(path))
+            self.file_list.addItem(item)
+            existing.add(key)
+        if self.file_list.count() and not self.output_edit.text():
+            first = self.source_paths()[0]
+            self.output_edit.setText(str(first.with_name(f"{first.stem}_合并.pdf")))
+        self._update_controls()
+
+    def source_paths(self) -> list[Path]:
+        return [
+            Path(self.file_list.item(index).data(Qt.ItemDataRole.UserRole))
+            for index in range(self.file_list.count())
+        ]
+
+    def output_path(self) -> Path:
+        return Path(self.output_edit.text()).expanduser()
+
+    def load_after_merge(self) -> bool:
+        return self.load_after_checkbox.isChecked()
+
+    def _choose_files(self) -> None:
+        selected, _filter = QFileDialog.getOpenFileNames(
+            self,
+            "选择要合并的 PDF（按住 Ctrl 可多选）",
+            "",
+            "PDF 文件 (*.pdf)",
+        )
+        if selected:
+            self.add_paths([Path(path) for path in selected])
+
+    def _choose_output(self) -> None:
+        initial = self.output_edit.text()
+        if not initial and self.file_list.count():
+            first = self.source_paths()[0]
+            initial = str(first.with_name(f"{first.stem}_合并.pdf"))
+        selected, _filter = QFileDialog.getSaveFileName(
+            self,
+            "保存合并后的 PDF",
+            initial,
+            "PDF 文件 (*.pdf)",
+        )
+        if selected:
+            path = Path(selected)
+            if path.suffix.lower() != ".pdf":
+                path = path.with_suffix(".pdf")
+            self.output_edit.setText(str(path))
+
+    def _remove_selected(self) -> None:
+        for item in self.file_list.selectedItems():
+            self.file_list.takeItem(self.file_list.row(item))
+        self._update_controls()
+
+    def _move_selected(self, offset: int) -> None:
+        row = self.file_list.currentRow()
+        target = row + offset
+        if row < 0 or target < 0 or target >= self.file_list.count():
+            return
+        item = self.file_list.takeItem(row)
+        self.file_list.insertItem(target, item)
+        self.file_list.setCurrentRow(target)
+        item.setSelected(True)
+        self._update_controls()
+
+    def _update_controls(self, _row: int = -1) -> None:
+        count = self.file_list.count()
+        row = self.file_list.currentRow()
+        self.count_label.setText(f"{count} 个文件")
+        self.remove_button.setEnabled(bool(self.file_list.selectedItems()))
+        self.up_button.setEnabled(row > 0)
+        self.down_button.setEnabled(0 <= row < count - 1)
+
+    def _validate_and_accept(self) -> None:
+        sources = self.source_paths()
+        if len(sources) < 2:
+            QMessageBox.warning(self, APP_NAME, "请至少添加两个 PDF 文件。")
+            return
+        if not self.output_edit.text().strip():
+            QMessageBox.warning(self, APP_NAME, "请选择合并结果的保存位置。")
+            return
+        destination = self.output_path().resolve()
+        if destination.suffix.lower() != ".pdf":
+            QMessageBox.warning(self, APP_NAME, "合并结果必须保存为 PDF 文件。")
+            return
+        if any(destination == source.resolve() for source in sources):
+            QMessageBox.warning(self, APP_NAME, "合并结果不能覆盖任何源 PDF。")
+            return
+        self.accept()
+
+
 class Toast(QFrame):
     def __init__(self, parent: QWidget, text: str) -> None:
         super().__init__(parent)
@@ -1870,6 +2210,11 @@ class MainWindow(QMainWindow):
         self.thumbnail_worker: ThumbnailWorker | None = None
         self.compression_thread: QThread | None = None
         self.compression_worker: CompressionWorker | None = None
+        self.merge_thread: QThread | None = None
+        self.merge_worker: MergeWorker | None = None
+        self.merge_load_after = True
+        self.processing_busy = False
+        self._closing = False
         self.preview_dialogs: list[PreviewDialog] = []
         self._fade_animations: list[QPropertyAnimation] = []
         self.loading_panel: ReadingPanel | None = None
@@ -1993,12 +2338,17 @@ class MainWindow(QMainWindow):
         self.file_button = QPushButton("浏览…")
         self.file_button.clicked.connect(self.choose_input)
         file_layout.addLayout(
-            self._step_header("01", "选择 PDF 文件", self.file_button)
+            self._step_header("01", "选择或合并 PDF", self.file_button)
         )
         self.input_info = QLabel("拖入文件，或点击右上角浏览")
         self.input_info.setObjectName("fieldValue")
         self.input_info.setWordWrap(True)
         file_layout.addWidget(self.input_info)
+        self.merge_button = QPushButton("＋ 合并多个 PDF")
+        self.merge_button.setProperty("quiet", True)
+        self.merge_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.merge_button.clicked.connect(lambda: self.open_merge_dialog())
+        file_layout.addWidget(self.merge_button)
         sidebar_layout.addWidget(file_card)
 
         target_card = self._card()
@@ -2245,21 +2595,30 @@ class MainWindow(QMainWindow):
         self.figures_button.setEnabled(enabled)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self.processing_busy or self._closing:
+            event.ignore()
+            return
         urls = event.mimeData().urls()
         if any(url.toLocalFile().lower().endswith(".pdf") for url in urls):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        if self.assets_loading:
-            Toast(self, "这篇论文还在分析中，请稍等一下")
+        if self.assets_loading or self.processing_busy or self._closing:
+            Toast(self, "当前任务完成后即可选择其他 PDF")
             event.ignore()
             return
-        for url in event.mimeData().urls():
-            path = Path(url.toLocalFile())
-            if path.suffix.lower() == ".pdf" and path.is_file():
-                self._load_input(path)
-                event.acceptProposedAction()
-                return
+        paths = [
+            Path(url.toLocalFile())
+            for url in event.mimeData().urls()
+            if Path(url.toLocalFile()).suffix.lower() == ".pdf"
+            and Path(url.toLocalFile()).is_file()
+        ]
+        if len(paths) > 1:
+            self.open_merge_dialog(paths)
+            event.acceptProposedAction()
+        elif paths:
+            self._load_input(paths[0])
+            event.acceptProposedAction()
 
     def choose_input(self) -> None:
         selected, _filter = QFileDialog.getOpenFileName(
@@ -2267,6 +2626,121 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self._load_input(Path(selected))
+
+    def open_merge_dialog(self, initial_paths: list[Path] | None = None) -> None:
+        compression_running = bool(
+            self.compression_thread and self.compression_thread.isRunning()
+        )
+        merge_running = bool(self.merge_thread and self.merge_thread.isRunning())
+        if (
+            self.assets_loading or self.processing_busy or self._closing
+            or compression_running or merge_running
+        ):
+            Toast(self, "当前任务完成后即可合并 PDF。")
+            return
+        dialog = PDFMergeDialog(self, initial_paths)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        sources = dialog.source_paths()
+        destination = dialog.output_path().resolve()
+        if self.input_path and destination == self.input_path.resolve():
+            self._show_error("合并结果不能覆盖压缩工作区中正在使用的 PDF。")
+            return
+        if destination.exists():
+            answer = QMessageBox.question(
+                self,
+                APP_NAME,
+                f"输出文件已经存在：\n{destination.name}\n\n是否覆盖？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.merge_load_after = dialog.load_after_merge()
+        self._start_merge(sources, destination)
+
+    def _start_merge(self, sources: list[Path], destination: Path) -> None:
+        self.progress_bar.setValue(0)
+        self.status_label.setText("正在准备合并…")
+        self.status_indicator.set_state("working")
+        self.result_label.clear()
+        self.result_label.setStyleSheet("")
+        self._set_busy(True)
+
+        self.merge_thread = QThread(self)
+        self.merge_worker = MergeWorker(sources, destination)
+        self.merge_worker.moveToThread(self.merge_thread)
+        self.merge_thread.started.connect(self.merge_worker.run)
+        self.merge_worker.progress.connect(self._merge_progress)
+        self.merge_worker.completed.connect(self._merge_completed)
+        self.merge_worker.failed.connect(self._merge_failed)
+        self.merge_worker.cancelled.connect(self._merge_cancelled)
+        self.merge_worker.completed.connect(self.merge_thread.quit)
+        self.merge_worker.failed.connect(self.merge_thread.quit)
+        self.merge_worker.cancelled.connect(self.merge_thread.quit)
+        self.merge_thread.finished.connect(self.merge_worker.deleteLater)
+        current_thread = self.merge_thread
+        self.merge_thread.finished.connect(
+            lambda thread=current_thread: self._merge_thread_finished(thread)
+        )
+        self.merge_thread.start()
+
+    def _merge_thread_finished(self, thread: QThread) -> None:
+        if self.merge_thread is thread:
+            self.merge_worker = None
+            self.merge_thread = None
+
+    @Slot(int, str)
+    def _merge_progress(self, value: int, message: str) -> None:
+        self.progress_bar.set_smooth_value(value)
+        self.status_label.setText(message)
+
+    @Slot(object)
+    def _merge_completed(self, result: MergeResult) -> None:
+        self._set_busy(False)
+        self.progress_bar.set_smooth_value(100)
+        self.status_label.setText("PDF 合并完成")
+        self.status_indicator.set_state("success")
+        self.last_output = result.output_path
+        self.open_button.setEnabled(True)
+        self.result_label.setText(
+            f"{result.source_count} 个 PDF · {result.page_count} 页\n"
+            f"{format_bytes(result.input_bytes)}  →  "
+            f"{format_bytes(result.output_bytes)}"
+        )
+        self.result_label.setStyleSheet(f"color: {SUCCESS}; font-weight: 650;")
+        if self.merge_load_after and not self._closing:
+            Toast(self, "合并完成 · 正在载入压缩工作区")
+            QTimer.singleShot(
+                0, lambda path=result.output_path: self._load_merge_result(path)
+            )
+        else:
+            Toast(self, f"合并完成 · {result.page_count} 页")
+
+    def _load_merge_result(self, path: Path) -> None:
+        if not self._closing:
+            self._load_input(path)
+            self.result_label.setText(
+                "合并文件已保存。读取完成后设置目标大小，点击“开始智能压缩”。"
+            )
+            self.result_label.setStyleSheet("")
+            self.open_button.setEnabled(True)
+
+    @Slot(str)
+    def _merge_failed(self, message: str) -> None:
+        self._set_busy(False)
+        self.status_label.setText("合并失败")
+        self.status_indicator.set_state("error")
+        self.result_label.setText(message)
+        self.result_label.setStyleSheet(f"color: {ERROR}; font-weight: 650;")
+        self._show_error(message)
+
+    @Slot()
+    def _merge_cancelled(self) -> None:
+        self._set_busy(False)
+        self.status_label.setText("合并任务已取消")
+        self.status_indicator.set_state("idle")
+        self.result_label.setText("没有生成合并文件，源 PDF 未发生变化。")
 
     def _load_input(self, path: Path) -> None:
         if not path.is_file():
@@ -2281,6 +2755,7 @@ class MainWindow(QMainWindow):
         self.assets = []
         self.selected_asset_keys.clear()
         self.file_button.setEnabled(False)
+        self.merge_button.setEnabled(False)
         self.file_button.setText("读取中…")
         self.start_button.setEnabled(False)
         self.selection_info.setText("正在识别完整 Figure，请稍候…")
@@ -2382,6 +2857,7 @@ class MainWindow(QMainWindow):
             return
         self.assets_loading = False
         self.file_button.setEnabled(True)
+        self.merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
         self.selected_asset_keys.clear()
@@ -2399,6 +2875,7 @@ class MainWindow(QMainWindow):
             return
         self.assets_loading = False
         self.file_button.setEnabled(True)
+        self.merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
         self.selected_asset_keys.clear()
@@ -2488,6 +2965,7 @@ class MainWindow(QMainWindow):
         self._start_thumbnail_loading(path, assets)
         self.assets_loading = False
         self.file_button.setEnabled(True)
+        self.merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.start_button.setEnabled(True)
         self._update_selection_info()
@@ -2639,6 +3117,8 @@ class MainWindow(QMainWindow):
         return size
 
     def start_compression(self) -> None:
+        if self.processing_busy or self._closing:
+            return
         try:
             if self.assets_loading:
                 raise ValueError("正在识别 PDF 中的 Figure，请稍候。")
@@ -2714,7 +3194,16 @@ class MainWindow(QMainWindow):
         self.compression_worker.failed.connect(self.compression_thread.quit)
         self.compression_worker.cancelled.connect(self.compression_thread.quit)
         self.compression_thread.finished.connect(self.compression_worker.deleteLater)
+        current_thread = self.compression_thread
+        self.compression_thread.finished.connect(
+            lambda thread=current_thread: self._compression_thread_finished(thread)
+        )
         self.compression_thread.start()
+
+    def _compression_thread_finished(self, thread: QThread) -> None:
+        if self.compression_thread is thread:
+            self.compression_worker = None
+            self.compression_thread = None
 
     @Slot(int, str)
     def _compression_progress(self, value: int, message: str) -> None:
@@ -2779,17 +3268,25 @@ class MainWindow(QMainWindow):
         self.result_label.setText("没有生成输出文件。")
 
     def cancel_compression(self) -> None:
-        if self.compression_worker:
+        if self.merge_worker and self.merge_thread and self.merge_thread.isRunning():
+            self.merge_worker.cancel()
+            self.cancel_button.setEnabled(False)
+            self.status_label.setText("正在安全取消合并…")
+        elif self.compression_worker:
             self.compression_worker.cancel()
             self.cancel_button.setEnabled(False)
             self.status_label.setText("正在安全取消…")
 
     def _set_busy(self, busy: bool) -> None:
+        self.processing_busy = busy
         self.file_button.setEnabled(not busy)
+        self.merge_button.setEnabled(not busy)
         self.output_button.setEnabled(not busy)
         self.target_edit.setEnabled(not busy)
         self.unit_combo.setEnabled(not busy)
-        self.start_button.setEnabled(not busy and not self.assets_loading)
+        self.start_button.setEnabled(
+            not busy and not self.assets_loading and self.input_path is not None
+        )
         self.cancel_button.setEnabled(busy)
         self._set_asset_controls_enabled(not busy and bool(self.assets))
         for card in self.asset_cards.values():
@@ -2806,15 +3303,25 @@ class MainWindow(QMainWindow):
             self._show_error(f"无法打开输出文件夹：{exc}")
 
     def _show_error(self, message: str) -> None:
-        QMessageBox.critical(self, APP_NAME, message)
+        if not self._closing:
+            QMessageBox.critical(self, APP_NAME, message)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._closing = True
         if self.scan_worker:
             self.scan_worker.cancel()
         if self.thumbnail_worker:
             self.thumbnail_worker.cancel()
         if self.compression_worker:
             self.compression_worker.cancel()
+        if self.merge_worker:
+            self.merge_worker.cancel()
+        if any(thread.isRunning() for thread in self.findChildren(QThread)):
+            self.setEnabled(False)
+            self.status_label.setText("正在结束后台任务…")
+            QTimer.singleShot(100, self.close)
+            event.ignore()
+            return
         event.accept()
 
 

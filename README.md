@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-33%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-48%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -62,6 +62,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 
 | Feature | What it does |
 | --- | --- |
+| Merge and compress | Combine up to 100 PDFs in your chosen order, then load the merged result into the visual compression workspace. |
 | Exact size target | Enter MB or KB. The app searches for the clearest result at or below the target instead of padding a file with meaningless bytes. |
 | Loss-minimizing workflow | Lossless structural optimization is tried first. Image or Figure data is reduced only when lossless work cannot reach the target. |
 | Complete Figure discovery | Captions such as `Fig. X`, `Figure X`, and `图 X` are used to group bitmaps, vector paths, arrows, and labels into one selectable item. |
@@ -102,6 +103,17 @@ On Windows, `start_pdf_tool.bat` can also create the isolated environment, insta
 6. Review the generated PDF. If a PowerPoint vector figure has a black background, uncheck it and run the task again.
 
 The source PDF is never overwritten. If the selected output path already exists, the app asks before replacing it.
+
+### Merge PDFs, then compress the result
+
+1. Click **Merge multiple PDFs** (`合并多个 PDF`), or drag multiple PDFs into the window.
+2. Add files and arrange their order by dragging, or with the **Move up / Move down** buttons. Remove any files you do not need.
+3. Choose where to save the merged PDF. Leave **Load into compression workspace after merging** checked, then click **Start merge**.
+4. After the merged document loads, review its Figures, set a target size in MB or KB, and click **Start smart compression**. The compressed result is saved separately from the merged PDF.
+
+Uncheck the workspace option if you only need the merged file. Merging runs in a separate process and supports cancellation; the output is installed only after the completed PDF passes page-count and page-loading checks. Page text, geometry, ordinary page links, annotations, and bookmark destinations are retained. Password-protected inputs must be decrypted first.
+
+Merging is a page-combination operation: document-level attachments, PDF portfolios, digital signatures, and named destinations are not guaranteed to carry over. The first PDF supplies the merged document's basic metadata.
 
 ## How it works
 
