@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-48%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-51%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -55,7 +55,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 
 | 功能 | 说明 |
 | --- | --- |
-| 合并后压缩 | 按指定顺序合并最多 100 个 PDF，并将合并结果载入可视化工作区继续定容压缩。 |
+| 合并后压缩 | 通过加固的原生引擎按指定顺序合并最多 100 个 PDF，并将结果载入加速的可视化工作区继续定容压缩。 |
 | 精确定容 | 输入 MB 或 KB，自动寻找不超过目标大小且尽可能清晰的结果，不靠填充无意义字节伪造体积。 |
 | 最小损失 | 首先尝试无损优化；只有达不到目标时才降低所选图片或 Figure 的数据量。 |
 | 完整 Figure 识别 | 根据 `Fig. X`、`Figure X` 或 `图 X` 图注，把位图、矢量线条、箭头和文字组成的论文插图视为一个项目。 |
@@ -104,7 +104,7 @@ py -3 -m venv .venv
 3. 选择合并文件的保存位置，保留“合并完成后载入压缩工作区”勾选，点击“开始合并”；
 4. 合并文件读取完成后，预览并勾选 Figure，设置 MB 或 KB 目标，点击“开始智能压缩”。压缩结果另存，合并文件也会保留。
 
-如果只需合并，取消“载入压缩工作区”勾选即可。合并在独立进程中执行并支持取消，完整结果经过页数和页面读取校验后才写入最终位置。页面文字、尺寸、旋转、普通页面链接、批注和书签目标会保留；受密码保护的文件需要先解密。
+如果只需合并，取消“载入压缩工作区”勾选即可。匹配协议 3 worker 时，合并由 Rust 守卫和 C++17/MuPDF 后端完成；worker 缺失或不兼容时自动回退到 Python/PyMuPDF。两条路径都在独立进程中执行并支持取消，完整结果经过页数和页面读取校验后才写入最终位置。页面文字、尺寸、旋转、普通页面链接、批注和书签目标会保留；受密码保护的文件需要先解密。
 
 合并以页面为单位，不保证保留文档级附件、PDF 文件包、数字签名和命名目标。合并文件的基本元数据取自第一份 PDF。
 
@@ -169,9 +169,9 @@ pdf-size-reducer/
 └── CHANGELOG.md           # 完整修改日志
 ```
 
-PDF 的图形选择、结构保护、安全控制和回退逻辑继续由 Python 负责。C++17 worker 的协议 2 会从一次高分辨率母版生成整条 Figure 质量阶梯，全局率失真规划器随后统一分配字节预算，避免反复重写整个 PDF。固定 `Automatica.pdf → 3.12 MiB` 基准从 v3.3.1 的 169.964 秒、v3.4.0 的 33.074 秒进一步缩短到 **9.501 秒**，相比分别达到 **17.889 倍**和 **3.481 倍加速**。输出比目标小 809 字节，原生文字完全保留，对源文件 PSNR 为 39.854 dB，并通过黑背景检测。详见[实测基准](benchmarks/RESULTS.md)。
+PDF 的图形选择、结构保护、安全控制和回退逻辑继续由 Python 负责。C++17 worker 的协议 3 支持加固的页面合并，并会从一次高分辨率母版生成整条 Figure 质量阶梯；全局率失真规划器随后统一分配字节预算，避免反复重写整个 PDF。固定 `Automatica.pdf → 3.12 MiB` 基准从 v3.3.1 的 169.964 秒、v3.4.0 的 33.074 秒进一步缩短到 **9.501 秒**，相比分别达到 **17.889 倍**和 **3.481 倍加速**。输出比目标小 809 字节，原生文字完全保留，对源文件 PSNR 为 39.854 dB，并通过黑背景检测。详见[实测基准](benchmarks/RESULTS.md)。
 
-C++ worker 是可选加速层：源码环境未构建或 worker 异常时会自动回退到原有 Python/MuPDF 引擎；Windows 打包版会自动内置。v3.6 中 Python 只启动零第三方 crate 依赖的 Rust 守卫，由守卫核验并约束 C++ 后端后再处理文档；完整能力边界与限制见[安全策略](SECURITY.md)。`build_exe.bat` 同时生成 `dist\PDF_Fast_Worker` 独立 worker 文件夹和可直接分发的 `dist\PDF_Fast_Worker_Windows_x64.zip`。
+C++ worker 是可选加速层：源码环境未构建或 worker 异常时会自动回退到原有 Python/MuPDF 引擎；Windows 打包版会自动内置。Python 只启动零第三方 crate 依赖的 Rust 守卫，由守卫核验并约束 C++ 后端后再渲染或合并文档。原生合并强化的是执行边界，不宣称快于 PyMuPDF 已经原生实现的 `insert_pdf`；主要实测加速仍来自合并后自动使用的压缩规划器。完整能力边界与限制见[安全策略](SECURITY.md)。`build_exe.bat` 同时生成 `dist\PDF_Fast_Worker` 独立 worker 文件夹和可直接分发的 `dist\PDF_Fast_Worker_Windows_x64.zip`。
 
 ## 隐私
 

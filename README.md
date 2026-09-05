@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-48%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-51%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -62,7 +62,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 
 | Feature | What it does |
 | --- | --- |
-| Merge and compress | Combine up to 100 PDFs in your chosen order, then load the merged result into the visual compression workspace. |
+| Merge and compress | Combine up to 100 PDFs through the guarded native engine, then load the result into the accelerated visual compression workspace. |
 | Exact size target | Enter MB or KB. The app searches for the clearest result at or below the target instead of padding a file with meaningless bytes. |
 | Loss-minimizing workflow | Lossless structural optimization is tried first. Image or Figure data is reduced only when lossless work cannot reach the target. |
 | Complete Figure discovery | Captions such as `Fig. X`, `Figure X`, and `图 X` are used to group bitmaps, vector paths, arrows, and labels into one selectable item. |
@@ -111,7 +111,7 @@ The source PDF is never overwritten. If the selected output path already exists,
 3. Choose where to save the merged PDF. Leave **Load into compression workspace after merging** checked, then click **Start merge**.
 4. After the merged document loads, review its Figures, set a target size in MB or KB, and click **Start smart compression**. The compressed result is saved separately from the merged PDF.
 
-Uncheck the workspace option if you only need the merged file. Merging runs in a separate process and supports cancellation; the output is installed only after the completed PDF passes page-count and page-loading checks. Page text, geometry, ordinary page links, annotations, and bookmark destinations are retained. Password-protected inputs must be decrypted first.
+Uncheck the workspace option if you only need the merged file. With a matching protocol-3 worker, merging runs through the Rust guard and C++17/MuPDF backend; an unavailable or incompatible worker falls back automatically to Python/PyMuPDF. Both paths run in a separate process and support cancellation. The output is installed only after the completed PDF passes page-count and page-loading checks. Page text, geometry, ordinary page links, annotations, and bookmark destinations are retained. Password-protected inputs must be decrypted first.
 
 Merging is a page-combination operation: document-level attachments, PDF portfolios, digital signatures, and named destinations are not guaranteed to carry over. The first PDF supplies the merged document's basic metadata.
 
@@ -181,9 +181,9 @@ pdf-size-reducer/
 └── CHANGELOG.md           # Full change history
 ```
 
-MuPDF, Pillow, and Qt already perform low-level work in native code, while Python retains PDF selection, safety, and fallback control. Protocol 2 of the C++17 worker now builds an entire Figure quality ladder from one high-resolution master; a global rate-distortion planner distributes the byte budget and avoids repeatedly rewriting the whole PDF. On the fixed `Automatica.pdf → 3.12 MiB` benchmark this reduced compression from 169.964 seconds in v3.3.1 and 33.074 seconds in v3.4.0 to **9.501 seconds**—**17.889× faster** than v3.3.1 and **3.481× faster** than v3.4.0. The output was 809 bytes below target, preserved native text exactly, scored 39.854 dB PSNR, and passed the black-background gate. See [the measured benchmark](benchmarks/RESULTS.md).
+MuPDF, Pillow, and Qt already perform low-level work in native code, while Python retains PDF selection, safety, and fallback control. Protocol 3 of the C++17 worker supports guarded page merging and builds an entire Figure quality ladder from one high-resolution master; a global rate-distortion planner distributes the byte budget and avoids repeatedly rewriting the whole PDF. On the fixed `Automatica.pdf → 3.12 MiB` benchmark this reduced compression from 169.964 seconds in v3.3.1 and 33.074 seconds in v3.4.0 to **9.501 seconds**—**17.889× faster** than v3.3.1 and **3.481× faster** than v3.4.0. The output was 809 bytes below target, preserved native text exactly, scored 39.854 dB PSNR, and passed the black-background gate. See [the measured benchmark](benchmarks/RESULTS.md).
 
-The native worker is optional. Source runs without a built worker use the tested Python/MuPDF fallback; packaged Windows builds include it automatically. In v3.6, Python launches a zero-third-party-dependency Rust guard, which verifies and contains the C++ backend before it processes a document. See the honest scope and limitations in the [security policy](SECURITY.md). `build_exe.bat` also produces a standalone folder in `dist\PDF_Fast_Worker` and a shareable `dist\PDF_Fast_Worker_Windows_x64.zip` bundle.
+The native worker is optional. Source runs without a built worker use the tested Python/MuPDF fallback; packaged Windows builds include it automatically. Python launches a zero-third-party-dependency Rust guard, which verifies and contains the C++ backend before it renders or merges a document. Native merging strengthens the execution boundary but is not advertised as faster than PyMuPDF's already-native `insert_pdf` path; the major measured speedup remains the compression planner used after merging. See the honest scope and limitations in the [security policy](SECURITY.md). `build_exe.bat` also produces a standalone folder in `dist\PDF_Fast_Worker` and a shareable `dist\PDF_Fast_Worker_Windows_x64.zip` bundle.
 
 ## Privacy
 

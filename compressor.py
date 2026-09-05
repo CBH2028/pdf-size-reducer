@@ -24,11 +24,13 @@ from typing import Callable
 from PIL import Image, ImageChops, ImageDraw
 
 from native_worker import (
+    NativeMergeResult,
     NativeRenderRequest,
     NativeWorkerCancelled,
     NativeWorkerError,
     NativeWorkerSession,
     find_native_worker,
+    merge_pdf_pages_native,
 )
 
 try:
@@ -114,6 +116,8 @@ class MergeResult:
     input_bytes: int
     output_bytes: int
     page_count: int
+    native_worker_used: bool = False
+    native_merge_seconds: float = 0.0
 
     @property
     def source_count(self) -> int:
@@ -2368,93 +2372,181 @@ def merge_pdfs(
     with tempfile.TemporaryDirectory(
         prefix=".pdf_size_reducer_merge_", dir=destination.parent
     ) as temporary_directory:
-        candidate = Path(temporary_directory) / "merged.pdf"
-        merged = fitz.open()
+        temp_dir = Path(temporary_directory)
+        candidate = temp_dir / "native-merged-pages.pdf"
         combined_toc: list[list[object]] = []
+        page_links: list[tuple[int, dict[str, object]]] = []
         page_offset = 0
         first_metadata: dict[str, str] | None = None
-        try:
-            for index, source_path in enumerate(sources, start=1):
-                _check_cancel(cancel_event)
+        for index, source_path in enumerate(sources, start=1):
+            _check_cancel(cancel_event)
+            _notify(
+                progress_callback,
+                3 + round(22 * (index - 1) / len(sources)),
+                f"正在检查 {index}/{len(sources)}：{source_path.name}",
+            )
+            try:
+                source = fitz.open(source_path)
+            except (RuntimeError, ValueError) as exc:
+                raise CompressionError(
+                    f"无法打开 {source_path.name}：{exc}"
+                ) from exc
+            try:
+                if source.needs_pass:
+                    raise PasswordProtectedPDF(
+                        f"{source_path.name} 受密码保护，请先解密后再合并。"
+                    )
+                if source.page_count == 0:
+                    raise CompressionError(
+                        f"{source_path.name} 中没有可合并的页面。"
+                    )
+                if first_metadata is None:
+                    first_metadata = {
+                        key: str(value)
+                        for key, value in source.metadata.items()
+                        if value
+                    }
+                for level, title, page_number, details in source.get_toc(False):
+                    adjusted_page = (
+                        page_number + page_offset if page_number > 0 else page_number
+                    )
+                    details = dict(details)
+                    details.pop("xref", None)
+                    if details.get("kind") == fitz.LINK_GOTO:
+                        details["page"] += page_offset
+                    combined_toc.append([level, title, adjusted_page, details])
+                for local_page_number, page in enumerate(source):
+                    for link in page.get_links():
+                        kind = link.get("kind")
+                        if kind == fitz.LINK_NAMED:
+                            continue
+                        if kind == fitz.LINK_GOTO and not (
+                            0 <= int(link.get("page", -1)) < source.page_count
+                        ):
+                            continue
+                        adjusted_link = {
+                            key: value
+                            for key, value in link.items()
+                            if key not in {"xref", "id"}
+                        }
+                        if kind == fitz.LINK_GOTO:
+                            adjusted_link["page"] = int(link["page"]) + page_offset
+                        page_links.append(
+                            (local_page_number + page_offset, adjusted_link)
+                        )
+                page_offset += source.page_count
+            except CompressionError:
+                raise
+            except (RuntimeError, ValueError) as exc:
+                raise CompressionError(
+                    f"读取 {source_path.name} 时失败：{exc}"
+                ) from exc
+            finally:
+                source.close()
+
+        allowed_metadata = {
+            "title",
+            "author",
+            "subject",
+            "keywords",
+            "creator",
+            "producer",
+            "creationDate",
+            "modDate",
+            "trapped",
+        }
+        metadata = {
+            key: value
+            for key, value in (first_metadata or {}).items()
+            if key in allowed_metadata
+        }
+        native_worker_used = False
+        native_merge_seconds = 0.0
+        native_result: NativeMergeResult | None = None
+        if find_native_worker() is not None:
+            try:
+                native_result = merge_pdf_pages_native(
+                    sources,
+                    candidate,
+                    temp_dir,
+                    cancel_event=cancel_event,
+                    progress_callback=lambda completed, total: _notify(
+                        progress_callback,
+                        28 + round(50 * completed / max(1, total)),
+                        f"原生引擎合并：{completed}/{total}",
+                    ),
+                )
+            except NativeWorkerCancelled as exc:
+                raise CompressionCancelled("合并已取消。") from exc
+            except NativeWorkerError:
+                candidate.unlink(missing_ok=True)
                 _notify(
                     progress_callback,
-                    5 + round(72 * (index - 1) / len(sources)),
-                    f"正在合并 {index}/{len(sources)}：{source_path.name}",
+                    28,
+                    "原生引擎不可用，正在切换兼容模式…",
                 )
-                try:
-                    source = fitz.open(source_path)
-                except (RuntimeError, ValueError) as exc:
-                    raise CompressionError(
-                        f"无法打开 {source_path.name}：{exc}"
-                    ) from exc
-                try:
-                    if source.needs_pass:
-                        raise PasswordProtectedPDF(
-                            f"{source_path.name} 受密码保护，请先解密后再合并。"
-                        )
-                    if source.page_count == 0:
-                        raise CompressionError(
-                            f"{source_path.name} 中没有可合并的页面。"
-                        )
-                    if first_metadata is None:
-                        first_metadata = {
-                            key: str(value)
-                            for key, value in source.metadata.items()
-                            if value
-                        }
-                    for level, title, page_number, details in source.get_toc(False):
-                        adjusted_page = (
-                            page_number + page_offset if page_number > 0 else page_number
-                        )
-                        details = dict(details)
-                        details.pop("xref", None)
-                        if details.get("kind") == fitz.LINK_GOTO:
-                            details["page"] += page_offset
-                        combined_toc.append([level, title, adjusted_page, details])
-                    merged.insert_pdf(source)
-                    page_offset += source.page_count
-                except CompressionError:
-                    raise
-                except (RuntimeError, ValueError) as exc:
-                    raise CompressionError(
-                        f"读取 {source_path.name} 时失败：{exc}"
-                    ) from exc
-                finally:
-                    source.close()
+            else:
+                if native_result.page_count != page_offset:
+                    candidate.unlink(missing_ok=True)
+                    _notify(
+                        progress_callback,
+                        28,
+                        "原生合并结果页数不匹配，正在切换兼容模式…",
+                    )
+                else:
+                    native_worker_used = True
+                    native_merge_seconds = native_result.elapsed_seconds
 
+        if native_worker_used:
             _check_cancel(cancel_event)
-            if first_metadata:
-                allowed_metadata = {
-                    "title",
-                    "author",
-                    "subject",
-                    "keywords",
-                    "creator",
-                    "producer",
-                    "creationDate",
-                    "modDate",
-                    "trapped",
-                }
-                merged.set_metadata(
-                    {
-                        key: value
-                        for key, value in first_metadata.items()
-                        if key in allowed_metadata
-                    }
+            _notify(progress_callback, 82, "正在写入书签和文档信息…")
+            try:
+                with fitz.open(candidate) as merged:
+                    if metadata:
+                        merged.set_metadata(metadata)
+                    if combined_toc:
+                        merged.set_toc(combined_toc)
+                    for page_number, link in page_links:
+                        page = merged[page_number]
+                        existing = page.get_links()
+                        if not any(
+                            item.get("kind") == link["kind"]
+                            and fitz.Rect(item["from"]) == fitz.Rect(link["from"])
+                            for item in existing
+                        ):
+                            page.insert_link(link)
+                    merged.saveIncr()
+            except (RuntimeError, ValueError) as exc:
+                raise CompressionError(
+                    f"写入合并文档信息失败：{exc}"
+                ) from exc
+        else:
+            merged = fitz.open()
+            try:
+                for index, source_path in enumerate(sources, start=1):
+                    _check_cancel(cancel_event)
+                    _notify(
+                        progress_callback,
+                        28 + round(50 * (index - 1) / len(sources)),
+                        f"兼容模式合并：{index}/{len(sources)}",
+                    )
+                    with fitz.open(source_path) as source:
+                        merged.insert_pdf(source)
+                if metadata:
+                    merged.set_metadata(metadata)
+                if combined_toc:
+                    merged.set_toc(combined_toc)
+                _notify(progress_callback, 82, "正在优化并写入合并结果…")
+                merged.save(
+                    candidate,
+                    garbage=4,
+                    deflate=True,
+                    deflate_images=True,
+                    deflate_fonts=True,
+                    use_objstms=1,
                 )
-            if combined_toc:
-                merged.set_toc(combined_toc)
-            _notify(progress_callback, 82, "正在优化并写入合并结果…")
-            merged.save(
-                candidate,
-                garbage=4,
-                deflate=True,
-                deflate_images=True,
-                deflate_fonts=True,
-                use_objstms=1,
-            )
-        finally:
-            merged.close()
+            finally:
+                merged.close()
 
         _check_cancel(cancel_event)
         _notify(progress_callback, 94, "正在校验合并结果…")
@@ -2482,6 +2574,8 @@ def merge_pdfs(
             input_bytes,
             destination.stat().st_size,
             page_offset,
+            native_worker_used,
+            native_merge_seconds,
         )
         _notify(
             progress_callback,

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <filesystem>
@@ -28,11 +29,13 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kProtocolVersion = 2;
+constexpr int kProtocolVersion = 3;
 constexpr int kMaximumThreads = 12;
 constexpr size_t kMaximumTasks = 4096;
+constexpr size_t kMaximumMergeSources = 100;
 constexpr uintmax_t kMaximumManifestBytes = 8ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumManifestLineBytes = 1024;
+constexpr size_t kMaximumMergeLineBytes = 32ULL * 1024ULL;
 constexpr double kMaximumCoordinate = 1'000'000.0;
 constexpr double kMaximumPixelsPerTask = 100'000'000.0;
 constexpr double kMaximumPixelsPerBatch = 2'000'000'000.0;
@@ -48,6 +51,11 @@ struct RenderTask {
     int quality = 85;
     std::string filename;
     int group = 0;
+};
+
+struct MergeSource {
+    int id = 0;
+    fs::path path;
 };
 
 std::string utf8(const std::wstring& value) {
@@ -221,6 +229,58 @@ std::vector<RenderTask> read_manifest(const fs::path& path) {
         throw std::runtime_error("Render manifest is empty.");
     }
     return tasks;
+}
+
+std::vector<MergeSource> read_merge_manifest(const fs::path& path) {
+    if (!fs::is_regular_file(path) ||
+        fs::file_size(path) > kMaximumManifestBytes) {
+        throw std::runtime_error(
+            "Merge manifest is not a regular file or exceeds 8 MiB.");
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Unable to open merge manifest.");
+    }
+    std::vector<MergeSource> sources;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty() || line.size() > kMaximumMergeLineBytes ||
+            sources.size() >= kMaximumMergeSources) {
+            throw std::runtime_error("Invalid merge manifest row.");
+        }
+        const auto fields = split_tabs(line);
+        if (fields.size() != 2) {
+            throw std::runtime_error("Malformed merge manifest row.");
+        }
+        MergeSource source;
+        source.id = parse_bounded_integer(
+            fields[0], "Merge source id", 0,
+            static_cast<int>(kMaximumMergeSources - 1));
+        if (source.id != static_cast<int>(sources.size())) {
+            throw std::runtime_error("Merge source ids must be consecutive.");
+        }
+        source.path = fs::u8path(fields[1]);
+        if (!fs::is_regular_file(source.path)) {
+            throw std::runtime_error("Merge input is not a regular file.");
+        }
+        std::string extension = source.path.extension().string();
+        std::transform(
+            extension.begin(), extension.end(), extension.begin(),
+            [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+        if (extension != ".pdf") {
+            throw std::runtime_error("Merge input must use the .pdf extension.");
+        }
+        sources.push_back(std::move(source));
+    }
+    if (sources.size() < 2) {
+        throw std::runtime_error("Native merge requires at least two PDFs.");
+    }
+    return sources;
 }
 
 bool same_region(const RenderTask& left, const RenderTask& right) {
@@ -538,6 +598,140 @@ private:
     std::string first_error_;
 };
 
+void copy_merge_page(
+    const mupdf::PdfDocument& destination,
+    const mupdf::PdfDocument& source,
+    const mupdf::PdfGraftMap& graft,
+    int page_number) {
+    static constexpr const char* kPageKeys[] = {
+        "Contents", "Resources", "MediaBox", "CropBox", "BleedBox",
+        "TrimBox", "ArtBox", "Rotate", "UserUnit",
+    };
+    const mupdf::PdfObj source_page = source.pdf_lookup_page_obj(page_number);
+    mupdf::PdfObj destination_page = destination.pdf_new_dict(12);
+    destination_page.pdf_dict_put(
+        mupdf::PdfObj("Type"), mupdf::PdfObj("Page"));
+    for (const char* key_name : kPageKeys) {
+        const mupdf::PdfObj key(key_name);
+        const mupdf::PdfObj value = source_page.pdf_dict_get_inheritable(key);
+        if (value.m_internal != nullptr) {
+            destination_page.pdf_dict_put(
+                key, graft.pdf_graft_mapped_object(value));
+        }
+    }
+
+    // Mirror PyMuPDF's page merge behavior: retain ordinary annotations,
+    // while links are rebuilt after all pages receive their final offsets.
+    const mupdf::PdfObj old_annotations =
+        source_page.pdf_dict_get(mupdf::PdfObj("Annots"));
+    const int annotation_count = old_annotations.pdf_array_len();
+    if (annotation_count > 0) {
+        mupdf::PdfObj new_annotations = destination_page.pdf_dict_put_array(
+            mupdf::PdfObj("Annots"), annotation_count);
+        for (int index = 0; index < annotation_count; ++index) {
+            mupdf::PdfObj annotation = old_annotations.pdf_array_get(index);
+            if (annotation.m_internal == nullptr || !annotation.pdf_is_dict() ||
+                annotation.pdf_dict_gets("IRT").m_internal != nullptr) {
+                continue;
+            }
+            const mupdf::PdfObj subtype = annotation.pdf_dict_gets("Subtype");
+            if (subtype.pdf_name_eq(mupdf::PdfObj("Link")) ||
+                subtype.pdf_name_eq(mupdf::PdfObj("Popup")) ||
+                subtype.pdf_name_eq(mupdf::PdfObj("Widget"))) {
+                continue;
+            }
+            annotation.pdf_dict_del(mupdf::PdfObj("Popup"));
+            annotation.pdf_dict_del(mupdf::PdfObj("P"));
+            const mupdf::PdfObj copied =
+                graft.pdf_graft_mapped_object(annotation);
+            new_annotations.pdf_array_push(destination.pdf_new_indirect(
+                copied.pdf_to_num(), 0));
+        }
+    }
+    const mupdf::PdfObj page_reference =
+        destination.pdf_add_object(destination_page);
+    destination.pdf_insert_page(-1, page_reference);
+}
+
+bool has_copyable_annotations(
+    const mupdf::PdfDocument& source,
+    int page_number) {
+    const mupdf::PdfObj source_page = source.pdf_lookup_page_obj(page_number);
+    const mupdf::PdfObj annotations =
+        source_page.pdf_dict_get(mupdf::PdfObj("Annots"));
+    const int annotation_count = annotations.pdf_array_len();
+    for (int index = 0; index < annotation_count; ++index) {
+        mupdf::PdfObj annotation = annotations.pdf_array_get(index);
+        if (annotation.m_internal == nullptr || !annotation.pdf_is_dict() ||
+            annotation.pdf_dict_gets("IRT").m_internal != nullptr) {
+            continue;
+        }
+        const mupdf::PdfObj subtype = annotation.pdf_dict_gets("Subtype");
+        if (!subtype.pdf_name_eq(mupdf::PdfObj("Link")) &&
+            !subtype.pdf_name_eq(mupdf::PdfObj("Popup")) &&
+            !subtype.pdf_name_eq(mupdf::PdfObj("Widget"))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int merge_documents(
+    const fs::path& manifest_path,
+    const fs::path& output_path) {
+    const auto sources = read_merge_manifest(manifest_path);
+    if (fs::exists(output_path)) {
+        throw std::runtime_error("Merge output already exists.");
+    }
+    const auto started = std::chrono::steady_clock::now();
+    mupdf::PdfDocument destination;
+    int total_pages = 0;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const std::string source_utf8 = utf8(sources[index].path.wstring());
+        mupdf::PdfDocument source(source_utf8.c_str());
+        if (source.pdf_needs_password()) {
+            throw std::runtime_error("Merge input is password protected.");
+        }
+        const int page_count = source.pdf_count_pages();
+        if (page_count <= 0) {
+            throw std::runtime_error("Merge input has no pages.");
+        }
+        mupdf::PdfGraftMap graft(destination);
+        for (int page = 0; page < page_count; ++page) {
+            if (has_copyable_annotations(source, page)) {
+                copy_merge_page(destination, source, graft, page);
+            } else {
+                graft.pdf_graft_mapped_page(-1, source, page);
+            }
+        }
+        total_pages += page_count;
+        std::cout << "{\"type\":\"progress\",\"operation\":\"merge\","
+                     "\"completed\":" << index + 1
+                  << ",\"total\":" << sources.size()
+                  << ",\"pages\":" << total_pages << "}" << std::endl;
+    }
+    mupdf::PdfWriteOptions options;
+    options.do_garbage = 4;
+    options.do_compress = 1;
+    options.do_compress_images = 1;
+    options.do_compress_fonts = 1;
+    options.do_use_objstms = 1;
+    options.do_encrypt = PDF_ENCRYPT_NONE;
+    const std::string output_utf8 = utf8(output_path.wstring());
+    destination.pdf_save_document(output_utf8.c_str(), options);
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started);
+    const uintmax_t output_bytes = fs::file_size(output_path);
+    std::cout << "{\"type\":\"result\",\"ok\":true,"
+                 "\"operation\":\"merge\",\"completed\":"
+              << sources.size() << ",\"pages\":" << total_pages
+              << ",\"bytes\":" << output_bytes
+              << ",\"elapsed_ms\":" << elapsed.count() << "}"
+              << std::endl;
+    return 0;
+}
+
 int serve(const fs::path& input_path, int requested_threads) {
     RenderPool pool(input_path, requested_threads);
     std::string line;
@@ -593,10 +787,11 @@ int wmain(int argc, wchar_t** argv) {
         std::vector<std::wstring> arguments(argv + 1, argv + argc);
         if (arguments.empty() ||
             (arguments[0] != L"render-batch" && arguments[0] != L"serve" &&
-             arguments[0] != L"--version")) {
+             arguments[0] != L"merge" && arguments[0] != L"--version")) {
             std::cerr << "Usage: pdf_fast_worker render-batch --input PDF "
                          "--manifest TSV --output-dir DIR [--threads N]\n"
-                         "   or: pdf_fast_worker serve --input PDF [--threads N]\n";
+                         "   or: pdf_fast_worker serve --input PDF [--threads N]\n"
+                         "   or: pdf_fast_worker merge --manifest TSV --output PDF\n";
             return 2;
         }
         if (arguments[0] == L"--version") {
@@ -606,6 +801,11 @@ int wmain(int argc, wchar_t** argv) {
         }
 
         mupdf::fz_register_document_handlers();
+        if (arguments[0] == L"merge") {
+            return merge_documents(
+                fs::path(required_value(arguments, L"--manifest")),
+                fs::path(required_value(arguments, L"--output")));
+        }
         const fs::path input_path(required_value(arguments, L"--input"));
         const int threads = optional_integer(
             arguments,

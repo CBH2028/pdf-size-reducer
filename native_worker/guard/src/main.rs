@@ -72,7 +72,7 @@ unsafe extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
 }
 
-const PROTOCOL_VERSION: u32 = 2;
+const PROTOCOL_VERSION: u32 = 3;
 const SECURITY_GUARD_VERSION: u32 = 1;
 const BACKEND_NAME: &str = "pdf_fast_worker_backend.exe";
 const MUPDF_NAME: &str = "mupdfcpp64.dll";
@@ -82,6 +82,8 @@ const MAX_MEMORY_MIB: usize = 4096;
 const MAX_PDF_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_TASKS: usize = 4096;
+const MAX_MERGE_SOURCES: usize = 100;
+const MAX_MERGE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 1024;
 const MAX_COMMAND_LINE_BYTES: usize = 32 * 1024;
 const MAX_BACKEND_LINE_BYTES: usize = 64 * 1024;
@@ -106,6 +108,11 @@ enum Mode {
         manifest: PathBuf,
         output: PathBuf,
         threads: u32,
+    },
+    Merge {
+        workspace: PathBuf,
+        manifest: PathBuf,
+        output: PathBuf,
     },
 }
 
@@ -360,6 +367,15 @@ fn parse_config() -> GuardResult<Config> {
                 threads: parse_threads(&options["--threads"])?,
             }
         }
+        "merge" => {
+            let options =
+                parse_options(&arguments[1..], &["--manifest", "--output", "--workspace"])?;
+            Mode::Merge {
+                workspace: canonical_directory(&options["--workspace"], "worker workspace")?,
+                manifest: PathBuf::from(&options["--manifest"]),
+                output: PathBuf::from(&options["--output"]),
+            }
+        }
         _ => return Err("Unsupported or malformed worker command.".to_owned()),
     };
     Ok(Config {
@@ -485,6 +501,17 @@ fn safe_filename(value: &str) -> bool {
         && value != ".."
 }
 
+fn safe_pdf_filename(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.to_ascii_lowercase().ends_with(".pdf")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && value != "."
+        && value != ".."
+}
+
 fn parse_bounded_u32(value: &str, label: &str, maximum: u32) -> GuardResult<u32> {
     let parsed = value
         .parse::<u32>()
@@ -602,6 +629,84 @@ fn validate_manifest(
     }
     if count == 0 {
         return Err("Render manifest is empty.".to_owned());
+    }
+    Ok((manifest, output))
+}
+
+fn validate_merge_request(
+    manifest: &Path,
+    output: &Path,
+    workspace: &Path,
+) -> GuardResult<(PathBuf, PathBuf)> {
+    let manifest = manifest
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve merge manifest: {error}"))?;
+    if manifest.parent() != Some(workspace) {
+        return Err("Merge manifest must stay directly inside the private workspace.".to_owned());
+    }
+    let metadata = fs::metadata(&manifest)
+        .map_err(|error| format!("Unable to inspect merge manifest: {error}"))?;
+    if !metadata.is_file() || metadata.len() > MAX_MANIFEST_BYTES {
+        return Err("Merge manifest is not a regular file or exceeds 8 MiB.".to_owned());
+    }
+    let output_name = output
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| "Merge output filename must be UTF-8.".to_owned())?;
+    if !safe_pdf_filename(output_name) {
+        return Err("Merge output must use a safe PDF basename.".to_owned());
+    }
+    let output_parent = output
+        .parent()
+        .ok_or_else(|| "Merge output has no parent directory.".to_owned())?
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve merge output directory: {error}"))?;
+    if output_parent != workspace {
+        return Err("Merge output must stay directly inside the private workspace.".to_owned());
+    }
+    let output = output_parent.join(output_name);
+    if fs::symlink_metadata(&output).is_ok() {
+        return Err("Merge output already exists.".to_owned());
+    }
+
+    let contents = fs::read_to_string(&manifest)
+        .map_err(|error| format!("Merge manifest is not valid UTF-8: {error}"))?;
+    let mut source_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    for (line_number, line) in contents.lines().enumerate() {
+        source_count += 1;
+        if source_count > MAX_MERGE_SOURCES {
+            return Err(format!(
+                "Merge manifest exceeds {MAX_MERGE_SOURCES} source files."
+            ));
+        }
+        if line.is_empty() || line.len() > MAX_COMMAND_LINE_BYTES || line.contains('\0') {
+            return Err(format!("Invalid merge manifest line {}.", line_number + 1));
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 2 {
+            return Err(format!(
+                "Malformed merge manifest line {}.",
+                line_number + 1
+            ));
+        }
+        let id = parse_bounded_u32(fields[0], "Merge source id", (MAX_MERGE_SOURCES - 1) as u32)?;
+        if id as usize != line_number {
+            return Err("Merge source ids must be consecutive.".to_owned());
+        }
+        let source = canonical_pdf(Path::new(fields[1]).as_os_str())?;
+        let source_bytes = fs::metadata(&source)
+            .map_err(|error| format!("Unable to inspect merge input: {error}"))?
+            .len();
+        total_bytes = total_bytes
+            .checked_add(source_bytes)
+            .ok_or_else(|| "Merge input size overflowed.".to_owned())?;
+        if total_bytes > MAX_MERGE_TOTAL_BYTES {
+            return Err("Merge inputs exceed the 16 GiB aggregate safety limit.".to_owned());
+        }
+    }
+    if source_count < 2 {
+        return Err("Native merge requires at least two PDFs.".to_owned());
     }
     Ok((manifest, output))
 }
@@ -825,6 +930,43 @@ fn run_batch(
     wait_for_backend(child, job)
 }
 
+fn run_merge(
+    backend: &Path,
+    workspace: &Path,
+    manifest: &Path,
+    output: &Path,
+    memory_mib: usize,
+) -> GuardResult<i32> {
+    let (manifest, output) = validate_merge_request(manifest, output, workspace)?;
+    let job = JobObject::create(memory_mib)?;
+    let mut command = Command::new(backend);
+    command
+        .arg("merge")
+        .arg("--manifest")
+        .arg(manifest)
+        .arg("--output")
+        .arg(&output)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Unable to start native merge backend: {error}"))?;
+    let exit_code = wait_for_backend(child, job)?;
+    if exit_code == 0 {
+        let metadata = fs::symlink_metadata(&output)
+            .map_err(|error| format!("Unable to inspect native merge output: {error}"))?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err("Native merge output is not a regular file.".to_owned());
+        }
+        if metadata.len() < 5 || metadata.len() > MAX_MERGE_TOTAL_BYTES {
+            return Err("Native merge output size is outside the safety range.".to_owned());
+        }
+    }
+    Ok(exit_code)
+}
+
 fn run() -> GuardResult<i32> {
     let config = parse_config()?;
     verify_native_component(&config.backend, EXPECTED_BACKEND_SHA256, "Native backend")?;
@@ -837,11 +979,11 @@ fn run() -> GuardResult<i32> {
                 .output()
                 .map_err(|error| format!("Unable to query native backend: {error}"))?;
             let response = String::from_utf8_lossy(&output.stdout);
-            if !output.status.success() || !response.contains("\"protocol\":2") {
+            if !output.status.success() || !response.contains("\"protocol\":3") {
                 return Err("Native backend protocol verification failed.".to_owned());
             }
             println!(
-                "{{\"name\":\"pdf_worker_guard\",\"protocol\":{},\"security_guard\":{},\"backend_sha256\":\"{}\",\"mupdf_sha256\":\"{}\",\"memory_limit_mib\":{},\"active_process_limit\":2}}",
+                "{{\"name\":\"pdf_worker_guard\",\"protocol\":{},\"security_guard\":{},\"capabilities\":[\"render\",\"ladder\",\"merge\"],\"backend_sha256\":\"{}\",\"mupdf_sha256\":\"{}\",\"memory_limit_mib\":{},\"active_process_limit\":2}}",
                 PROTOCOL_VERSION,
                 SECURITY_GUARD_VERSION,
                 EXPECTED_BACKEND_SHA256,
@@ -876,6 +1018,17 @@ fn run() -> GuardResult<i32> {
             threads,
             config.memory_mib,
         ),
+        Mode::Merge {
+            workspace,
+            manifest,
+            output,
+        } => run_merge(
+            &config.backend,
+            &workspace,
+            &manifest,
+            &output,
+            config.memory_mib,
+        ),
     }
 }
 
@@ -900,6 +1053,15 @@ mod tests {
         assert!(!safe_filename("../escape.jpg"));
         assert!(!safe_filename("figure.png"));
         assert!(!safe_filename("subdir\\figure.jpg"));
+    }
+
+    #[test]
+    fn merge_outputs_are_restricted_to_safe_pdf_basenames() {
+        assert!(safe_pdf_filename("native-merged-pages.pdf"));
+        assert!(safe_pdf_filename("MERGED.PDF"));
+        assert!(!safe_pdf_filename("../escape.pdf"));
+        assert!(!safe_pdf_filename("merge.jpg"));
+        assert!(!safe_pdf_filename("nested\\merge.pdf"));
     }
 
     #[test]

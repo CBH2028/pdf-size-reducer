@@ -12,12 +12,14 @@ import pytest
 from PIL import Image
 
 import native_worker
-from compressor import compress_pdf
+import compressor
+from compressor import compress_pdf, merge_pdfs
 from native_worker import (
     NativeRenderRequest,
     NativeWorkerCancelled,
     NativeWorkerError,
     NativeWorkerSession,
+    merge_pdf_pages_native,
 )
 
 
@@ -64,8 +66,134 @@ def test_native_worker_protocol(native_binary: Path) -> None:
     assert response["security_guard"] == 1
     assert response["memory_limit_mib"] == 1536
     assert response["active_process_limit"] == 2
+    assert response["capabilities"] == ["render", "ladder", "merge"]
     assert len(response["backend_sha256"]) == 64
     assert len(response["mupdf_sha256"]) == 64
+
+
+def _make_merge_pdf(path: Path, labels: list[str]) -> None:
+    document = fitz.open()
+    for label in labels:
+        page = document.new_page()
+        page.insert_text((72, 72), label)
+    document[0].add_text_annot((120, 120), f"Note {labels[0]}")
+    document.save(path)
+    document.close()
+
+
+def test_guarded_native_merge_copies_pages_and_annotations(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    source_directory = tmp_path / "中文 source"
+    source_directory.mkdir()
+    first = source_directory / "第一份.pdf"
+    second = source_directory / "第二份.pdf"
+    output = tmp_path / "native-merged.pdf"
+    _make_merge_pdf(first, ["FIRST"])
+    _make_merge_pdf(second, ["SECOND-A", "SECOND-B"])
+    progress: list[tuple[int, int]] = []
+
+    result = merge_pdf_pages_native(
+        [first, second],
+        output,
+        tmp_path,
+        progress_callback=lambda completed, total: progress.append(
+            (completed, total)
+        ),
+    )
+
+    assert result.source_count == 2
+    assert result.page_count == 3
+    assert result.output_bytes == output.stat().st_size
+    assert result.elapsed_seconds >= 0
+    assert progress == [(1, 2), (2, 2)]
+    with fitz.open(output) as document:
+        assert "FIRST" in document[0].get_text()
+        assert "SECOND-A" in document[1].get_text()
+        assert "SECOND-B" in document[2].get_text()
+        assert next(document[0].annots()).info["content"] == "Note FIRST"
+
+
+def test_rust_guard_rejects_native_merge_output_escape(
+    tmp_path: Path, native_binary: Path
+) -> None:
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    _make_merge_pdf(first, ["FIRST"])
+    _make_merge_pdf(second, ["SECOND"])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manifest = workspace / "native-merge-inputs.tsv"
+    manifest.write_text(
+        f"0\t{first.resolve()}\n1\t{second.resolve()}\n",
+        encoding="utf-8",
+    )
+    escaped = tmp_path / "escaped.pdf"
+
+    completed = subprocess.run(
+        [
+            str(native_binary),
+            "merge",
+            "--manifest",
+            str(manifest),
+            "--output",
+            str(escaped),
+            "--workspace",
+            str(workspace),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    assert completed.returncode == 64
+    assert "private workspace" in completed.stderr
+    assert not escaped.exists()
+
+
+def test_merge_uses_native_accelerator_and_falls_back_safely(
+    tmp_path: Path,
+    native_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    accelerated = tmp_path / "accelerated.pdf"
+    fallback = tmp_path / "fallback.pdf"
+    mismatched = tmp_path / "mismatched.pdf"
+    _make_merge_pdf(first, ["FIRST"])
+    _make_merge_pdf(second, ["SECOND"])
+
+    accelerated_result = merge_pdfs([first, second], accelerated)
+    assert accelerated_result.native_worker_used is True
+    assert accelerated_result.native_merge_seconds >= 0
+
+    def unavailable(*_args, **_kwargs):
+        raise NativeWorkerError("simulated native failure")
+
+    monkeypatch.setattr(compressor, "merge_pdf_pages_native", unavailable)
+    fallback_result = merge_pdfs([first, second], fallback)
+    assert fallback_result.native_worker_used is False
+    with fitz.open(fallback) as document:
+        assert document.page_count == 2
+        assert "FIRST" in document[0].get_text()
+        assert "SECOND" in document[1].get_text()
+
+    def wrong_page_count(_sources, candidate, _workspace, **_kwargs):
+        Path(candidate).write_bytes(b"%PDF-bad-candidate")
+        return native_worker.NativeMergeResult(
+            Path(candidate), 2, 3, 18, 0.01
+        )
+
+    monkeypatch.setattr(
+        compressor, "merge_pdf_pages_native", wrong_page_count
+    )
+    mismatched_result = merge_pdfs([first, second], mismatched)
+    assert mismatched_result.native_worker_used is False
+    with fitz.open(mismatched) as document:
+        assert document.page_count == 2
 
 
 def test_persistent_native_session_culls_text(

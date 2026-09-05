@@ -2,6 +2,25 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.8.0 - 2026-09-05
+
+### Added
+
+- Extend the guarded native-worker protocol to version 3 with a dedicated `merge` capability. PDF merging now runs through the Rust guard and C++17/MuPDF backend when the matching worker is available.
+- Validate merge manifests, source identities, private-workspace placement, output names, source count, aggregate input size, and completed output independently in Python, Rust, and C++.
+- Preserve page order, geometry, text, ordinary links, annotations, metadata, and adjusted bookmark destinations across the native merge path.
+
+### Compatibility and performance
+
+- Fall back automatically to the existing Python/PyMuPDF merger if the protocol-3 worker is missing, incompatible, fails request or protocol validation, or returns a mismatched page count. Cancellation remains cancellation rather than silently restarting work. Source files and pre-existing destinations remain untouched.
+- Keep the merged result connected to the existing native Figure quality-ladder and global rate-distortion compression planner, including the measured **17.889×** compression result from v3.5.
+- Native merging is a security and engine-integration upgrade, not a claimed merge-speed improvement. On the 97.92 MiB / 48-page split-file check, guarded native merging took 1.797 seconds versus 1.032 seconds for the direct PyMuPDF fallback; the extra 0.765 seconds comes from process isolation, hashing, and post-merge navigation repair.
+
+### Testing
+
+- Add guarded native merge coverage for Unicode paths, ordering, text, annotations, progress, workspace escape rejection, protocol discovery, and automatic fallback.
+- All 51 Python regression tests and 5 Rust unit tests passed.
+
 ## 3.7.0 - 2026-09-05
 
 ### Added

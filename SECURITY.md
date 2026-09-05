@@ -1,7 +1,7 @@
 # Security policy and architecture
 
-PDF files are complex, attacker-controlled inputs. PDF Size Reducer v3.6 adds
-a Rust guard in front of the high-speed C++/MuPDF renderer. Request parsing,
+PDF files are complex, attacker-controlled inputs. PDF Size Reducer v3.8 uses
+a Rust guard in front of the high-speed C++/MuPDF renderer and merger. Request parsing,
 validation, hashing, and protocol framing stay in safe Rust; `unsafe` is limited
 to the small Windows Job Object FFI boundary. This reduces the exposed
 native-code surface, but it does not turn MuPDF into memory-safe code or claim
@@ -13,7 +13,7 @@ Packaged builds contain two native executables:
 
 - `pdf_fast_worker.exe` is the Rust security guard and the only executable the
   Python application launches.
-- `pdf_fast_worker_backend.exe` is the C++17/MuPDF rendering backend. Its
+- `pdf_fast_worker_backend.exe` is the C++17/MuPDF rendering and merging backend. Its
   SHA-256 digest and that of `mupdfcpp64.dll` are compiled into the guard,
   which verifies both native components before every launch.
 
@@ -29,12 +29,14 @@ Before MuPDF receives a job, the guard:
 - rejects path traversal, duplicate IDs or names, existing output files,
   non-finite coordinates, invalid DPI/quality values, and malformed responses;
 - limits a PDF to 4 GiB, a manifest to 8 MiB, a batch to 4,096 tasks and two
-  gigapixels, and one render request to 100 megapixels;
+  gigapixels, one render request to 100 megapixels, and a merge to 100 sources
+  with at most 16 GiB of aggregate input;
 - places itself and the inherited backend in a Windows Job Object with a
   1,536 MiB per-process memory limit, a two-process ceiling, termination on
   abnormal guard exit, and unhandled-exception termination;
-- receives only a minimal subprocess environment; Python applies a bounded
-  render timeout and validates output size plus JPEG framing before use.
+- receives only a minimal subprocess environment; Python applies bounded
+  render and merge timeouts and validates output size, JPEG framing, and the
+  completed PDF before use.
 
 The same manifest constraints are repeated in Python and C++ as
 defense-in-depth. If the guarded worker is absent or incompatible, compression

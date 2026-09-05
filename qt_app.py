@@ -93,7 +93,7 @@ from native_worker import find_native_worker
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.8.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -2699,14 +2699,15 @@ class MainWindow(QMainWindow):
     def _merge_completed(self, result: MergeResult) -> None:
         self._set_busy(False)
         self.progress_bar.set_smooth_value(100)
-        self.status_label.setText("PDF 合并完成")
+        engine = "Rust 守卫 · C++/MuPDF 原生合并" if result.native_worker_used else "兼容模式"
+        self.status_label.setText(f"PDF 合并完成 · {engine}")
         self.status_indicator.set_state("success")
         self.last_output = result.output_path
         self.open_button.setEnabled(True)
         self.result_label.setText(
             f"{result.source_count} 个 PDF · {result.page_count} 页\n"
             f"{format_bytes(result.input_bytes)}  →  "
-            f"{format_bytes(result.output_bytes)}"
+            f"{format_bytes(result.output_bytes)} · {engine}"
         )
         self.result_label.setStyleSheet(f"color: {SUCCESS}; font-weight: 650;")
         if self.merge_load_after and not self._closing:

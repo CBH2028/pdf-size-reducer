@@ -16,13 +16,15 @@ from pathlib import Path
 from typing import Callable
 
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 SECURITY_GUARD_VERSION = 1
 MAX_NATIVE_TASKS = 4096
 MAX_NATIVE_BATCH_PIXELS = 2_000_000_000
 MAX_NATIVE_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_RESPONSE_LINE_BYTES = 64 * 1024
 DEFAULT_BATCH_TIMEOUT_SECONDS = 900
+MAX_NATIVE_MERGE_SOURCES = 100
+MAX_NATIVE_MERGE_OUTPUT_BYTES = 16 * 1024**3
 ProgressCallback = Callable[[int, int], None]
 
 
@@ -42,6 +44,15 @@ class NativeRenderRequest:
     dpi: int
     jpeg_quality: int
     group_id: int = 0
+
+
+@dataclass(frozen=True)
+class NativeMergeResult:
+    output_path: Path
+    source_count: int
+    page_count: int
+    output_bytes: int
+    elapsed_seconds: float
 
 
 def _candidate_paths() -> list[Path]:
@@ -194,6 +205,8 @@ def find_native_worker() -> Path | None:
             if (
                 response.get("protocol") == PROTOCOL_VERSION
                 and response.get("security_guard") == SECURITY_GUARD_VERSION
+                and response.get("capabilities")
+                == ["render", "ladder", "merge"]
                 and _is_sha256_digest(backend_digest)
                 and _is_sha256_digest(mupdf_digest)
             ):
@@ -570,3 +583,194 @@ def render_figure_batch(
             cancel_event=cancel_event,
             progress_callback=progress_callback,
         )
+
+
+def _write_merge_manifest(
+    input_paths: list[Path], workspace: Path
+) -> Path:
+    if not 2 <= len(input_paths) <= MAX_NATIVE_MERGE_SOURCES:
+        raise NativeWorkerError("Native merge requires 2 to 100 PDF files.")
+    rows = []
+    for index, path in enumerate(input_paths):
+        resolved = path.resolve()
+        if not resolved.is_file() or resolved.suffix.lower() != ".pdf":
+            raise NativeWorkerError(f"Invalid native merge input: {path.name}")
+        value = str(resolved)
+        if "\t" in value or "\n" in value or "\r" in value:
+            raise NativeWorkerError(
+                "Native merge paths cannot contain tabs or newlines."
+            )
+        rows.append(f"{index}\t{value}")
+    manifest = workspace / "native-merge-inputs.tsv"
+    try:
+        with manifest.open("x", encoding="utf-8", newline="\n") as output:
+            output.write("\n".join(rows) + "\n")
+    except FileExistsError as exc:
+        raise NativeWorkerError("Native merge manifest already exists.") from exc
+    return manifest
+
+
+def merge_pdf_pages_native(
+    input_paths: list[str | Path] | tuple[str | Path, ...],
+    output_path: str | Path,
+    workspace: str | Path,
+    *,
+    cancel_event: threading.Event | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> NativeMergeResult:
+    """Merge PDF pages through the guarded native MuPDF backend."""
+    worker = find_native_worker()
+    if worker is None:
+        raise NativeWorkerError(
+            "Native merge worker is not installed or is incompatible."
+        )
+    sources = [Path(path).resolve() for path in input_paths]
+    work_directory = Path(workspace).resolve()
+    destination = Path(output_path).resolve()
+    if not work_directory.is_dir():
+        raise NativeWorkerError("Native merge workspace does not exist.")
+    if destination.parent != work_directory or destination.suffix.lower() != ".pdf":
+        raise NativeWorkerError(
+            "Native merge output must stay directly inside its private workspace."
+        )
+    if destination.exists() or destination.is_symlink():
+        raise NativeWorkerError("Native merge output already exists.")
+    manifest = _write_merge_manifest(sources, work_directory)
+    command = [
+        str(worker),
+        "merge",
+        "--manifest",
+        str(manifest),
+        "--output",
+        str(destination),
+        "--workspace",
+        str(work_directory),
+    ]
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        creationflags=flags,
+        env=_worker_environment(worker.parent),
+        cwd=worker.parent,
+    )
+    assert process.stdout is not None
+    messages: queue.Queue[object] = queue.Queue()
+    reader = threading.Thread(
+        target=_reader,
+        args=(process.stdout, messages),
+        daemon=True,
+    )
+    reader.start()
+    try:
+        configured_timeout = int(
+            os.environ.get("PDF_SIZE_REDUCER_WORKER_TIMEOUT_SECONDS", "")
+            or DEFAULT_BATCH_TIMEOUT_SECONDS
+        )
+    except ValueError:
+        configured_timeout = DEFAULT_BATCH_TIMEOUT_SECONDS
+    deadline = time.monotonic() + max(30, min(1800, configured_timeout))
+    recent_lines: list[str] = []
+    response: dict[str, object] | None = None
+    try:
+        while response is None:
+            if cancel_event is not None and cancel_event.is_set():
+                process.terminate()
+                raise NativeWorkerCancelled("Native PDF merge was cancelled.")
+            if time.monotonic() >= deadline:
+                process.terminate()
+                raise NativeWorkerError("Native PDF merge timed out.")
+            try:
+                message = messages.get(timeout=0.05)
+            except queue.Empty:
+                if process.poll() is not None:
+                    raise NativeWorkerError(
+                        f"Native PDF merge exited with code {process.returncode}."
+                    )
+                continue
+            if message is None:
+                if process.poll() is not None:
+                    detail = recent_lines[-1] if recent_lines else "no detail"
+                    raise NativeWorkerError(
+                        f"Native PDF merge exited with code {process.returncode}: "
+                        f"{detail}"
+                    )
+                continue
+            if isinstance(message, NativeWorkerError):
+                raise message
+            line = str(message).strip()
+            if not line:
+                continue
+            recent_lines.append(line)
+            recent_lines = recent_lines[-4:]
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                raise NativeWorkerError(
+                    "Native PDF merge returned an invalid protocol response."
+                )
+            if record.get("type") == "progress":
+                completed = _strict_int(record.get("completed"), "merge progress")
+                total = _strict_int(record.get("total"), "merge total")
+                if completed < 0 or total != len(sources) or completed > total:
+                    raise NativeWorkerError(
+                        "Native PDF merge returned invalid progress bounds."
+                    )
+                if progress_callback:
+                    progress_callback(completed, total)
+            elif record.get("type") == "result":
+                response = record
+        if response.get("ok") is not True or response.get("operation") != "merge":
+            raise NativeWorkerError(
+                "Native PDF merge failed: "
+                + str(response.get("message", "no detail"))
+            )
+        source_count = _strict_int(response.get("completed"), "merge source count")
+        page_count = _strict_int(response.get("pages"), "merge page count")
+        output_bytes = _strict_int(response.get("bytes"), "merge output size")
+        elapsed_ms = _strict_int(response.get("elapsed_ms"), "merge elapsed time")
+        if source_count != len(sources) or page_count < source_count:
+            raise NativeWorkerError(
+                "Native PDF merge completion metadata did not match the request."
+            )
+        process.wait(timeout=5)
+        if process.returncode != 0:
+            raise NativeWorkerError(
+                f"Native PDF merge exited with code {process.returncode}."
+            )
+        if destination.is_symlink() or not destination.is_file():
+            raise NativeWorkerError("Native PDF merge did not produce an output file.")
+        actual_size = destination.stat().st_size
+        if (
+            actual_size != output_bytes
+            or actual_size < 5
+            or actual_size > MAX_NATIVE_MERGE_OUTPUT_BYTES
+        ):
+            raise NativeWorkerError("Native PDF merge produced an unsafe output size.")
+        with destination.open("rb") as output:
+            if output.read(5) != b"%PDF-":
+                raise NativeWorkerError("Native PDF merge output is not a PDF.")
+        return NativeMergeResult(
+            destination,
+            source_count,
+            page_count,
+            output_bytes,
+            elapsed_ms / 1000,
+        )
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        reader.join(timeout=1)
