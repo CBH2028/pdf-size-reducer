@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-80%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-135%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -62,6 +62,9 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 
 | Feature | What it does |
 | --- | --- |
+| Region-based text editing | Detect text paragraphs, split separated columns, identify image areas, and edit a selected region or draw a new text box. |
+| Matched text styling | Reuse an embedded font when it covers the new characters; inherit size, color, line spacing and alignment from nearby text, with visible fallback warnings. |
+| Page deletion | Remove the current page or original page ranges such as `2, 4-6`; restore, undo and redo before saving. At least one page must remain. |
 | Merge and compress | Combine up to 100 PDFs through the guarded native engine, then load the result into the accelerated visual compression workspace. |
 | Exact size target | Enter MB or KB. The app searches for the clearest result at or below the target instead of padding a file with meaningless bytes. |
 | Loss-minimizing workflow | Lossless structural optimization is tried first. Image or Figure data is reduced only when lossless work cannot reach the target. |
@@ -132,6 +135,18 @@ Merging is a page-combination operation: document-level attachments, PDF portfol
 - The C++ worker rasterizes each selected complete Figure once at 720 DPI, derives its lower-DPI variants from that master, and leaves recognizable text in an upper PDF text layer.
 - A global rate-distortion planner allocates the available bytes across all selected assets, then normally assembles only two complete candidate PDFs.
 - If the target would require going below the 180 DPI clarity floor, the app reports the smallest safe result instead of silently producing unreadable content.
+
+## Edit text and delete pages (v3.10.0)
+
+Open **Edit PDF / 编辑 PDF · 自动分区** in the file card. Click a detected text region to replace its contents, or choose **框选新增文字** and draw a box to add text. The editor matches nearby text, favoring the same column; the reference region can be changed manually. Click **应用到草稿并预览** to see the actual PDF rendering. Font size is never silently reduced to fit: enlarge the box, shorten the text or adjust the size explicitly if needed.
+
+Use **删除本页** to mark the current page for removal; the same button restores it. **页面管理…** accepts original page numbers and ranges. Original numbering stays visible throughout editing, so successive deletions do not shift the page you are selecting. Undo and redo cover both text changes and page deletion.
+
+**另存为 PDF** writes a new file. **保存并继续压缩** saves it and loads the result into the existing compression workspace. Original files are not overwritten, and cancellation or stale source-file detection prevents partial output installation.
+
+![Region-based PDF editor](docs/images/pdf-editor.png)
+
+This is a horizontal-text editor and geometric layout detector, not OCR, a structured table editor or a Word-style document reflow engine. Scanned image text cannot be directly replaced. Mixed-style regions use their dominant style; unavailable or incomplete fonts require an explicitly reported fallback. Signature-bearing documents and unsafe overlapping/rotated text regions are protected from editing. Always review the preview. See the [editing guide and limitations](docs/EDITING.md).
 
 ## Development and testing
 

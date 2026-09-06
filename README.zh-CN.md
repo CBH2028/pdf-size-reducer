@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-80%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-135%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -121,6 +121,20 @@ py -3 -m venv .venv
 - C++ worker 以 720 DPI 对每张完整 Figure 只做一次母版光栅化，再从母版生成低 DPI 版本；可识别文字仍保留在上层。
 - 全局率失真规划器把可用字节分配给所有已选资源，通常只需装配两个完整候选 PDF。
 - 如果目标小到无法维持 180 DPI，程序会报告当前内容可实现的最小大小，而不是继续输出难以辨认的结果。
+
+## 编辑文字与删除页面（v3.10.0）
+
+点击文件卡片中的 **“编辑 PDF · 自动分区”**，可直接选择文件进入编辑器，无需先执行压缩：
+
+1. 自动识别文字段落、分栏文字与图片区域。点击蓝色文字区可替换内容；点击“框选新增文字”后，在页面拖出新增区域。
+2. 新增文字优先匹配同栏附近文字的字体、字号、颜色、行距和对齐方式，也可手动选择参考区。可用且包含所需字形的嵌入字体会优先复用；缺字或无法复用时明确提示替代字体。
+3. 点击底部的 **“应用到草稿并预览”** 查看实际排版。文字过长时提示扩大区域、精简内容或手动调字号，不会悄悄缩字、截断文本或覆盖邻段。
+4. **“删除本页”** 可标记删除当前页，再次点击可恢复；**“页面管理…”** 支持 `2, 4-6` 等原始页码，清空列表可恢复所有页。删页和文字修改均可撤销/重做，禁止删光全部页面。
+5. **“另存为 PDF”** 保存副本；**“保存并继续压缩”** 将编辑结果载入原有压缩工作区。原 PDF 始终保留，取消和源文件中途变化不会安装不完整结果。
+
+![PDF 自动分区与文字编辑](docs/images/pdf-editor.png)
+
+此版主要支持水平中英文文字，不是 OCR、表格结构编辑或 Word 式全文重排。扫描图内原字不能直接替换；混合样式整区替换采用主要样式，需核对预览。签名文档、旋转/竖排文字、不可见文字和不安全的重叠区域会受保护。页面删除后，指向被删页的链接会移除，对应书签会停用。详细说明见[编辑指南](docs/EDITING.md)。
 
 ## 开发与测试
 

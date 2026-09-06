@@ -96,10 +96,11 @@ from compressor import (
 )
 from native_worker import find_native_worker
 from process_jobs import WorkerJob, gated_worker
+from pdf_editor import render_editor_page, save_pdf_edits
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.9.1"
+APP_VERSION = "3.10.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -1915,6 +1916,68 @@ class PreviewRenderWorker(QObject):
             self.failed.emit(str(exc))
 
 
+def _editor_preview_process(source, page_index, edits, destination, source_state, deleted_pages, result_queue, cancel_event):
+    try:
+        result = render_editor_page(source, page_index, edits, destination, source_state, cancel_event, deleted_pages)
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        result_queue.put(("completed", result))
+
+
+def _editor_save_process(source, destination, edits, source_state, deleted_pages, result_queue, cancel_event):
+    try:
+        result = save_pdf_edits(
+            source, destination, edits, source_state, cancel_event,
+            lambda value, message: result_queue.put(("progress", value, message)),
+            deleted_pages,
+        )
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        result_queue.put(("completed", result))
+
+
+class PDFEditorWorker(QObject):
+    progress = Signal(int, str)
+    completed = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, mode, source, page_index, edits, source_state, destination=None, deleted_pages=()):
+        super().__init__()
+        self.mode, self.source, self.page_index = mode, source, page_index
+        self.edits, self.source_state, self.destination = edits, source_state, destination
+        self.deleted_pages = deleted_pages
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    @Slot()
+    def run(self):
+        if self.mode == "save":
+            _run_staged_pdf_process(
+                self, _editor_save_process,
+                (self.source, self.destination, self.edits, self.source_state, self.deleted_pages), "PDFEditorSave",
+            )
+            return
+        try:
+            with tempfile.TemporaryDirectory(prefix="pdf-editor-preview-") as directory:
+                candidate = Path(directory) / "page.png"
+                _run_pdf_process(
+                    self, _editor_preview_process,
+                    (self.source, self.page_index, self.edits, candidate, self.source_state, self.deleted_pages), "PDFEditorPreview",
+                    complete=lambda result: (result[0], candidate.read_bytes(), result[1]), cancel_after=1.0,
+                )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class SmoothGraphicsView(QGraphicsView):
     def __init__(self, scene: QGraphicsScene) -> None:
         super().__init__(scene)
@@ -2458,7 +2521,7 @@ class MainWindow(QMainWindow):
         brand.setSpacing(1)
         title = QLabel("PDF Size Reducer")
         title.setObjectName("appTitle")
-        subtitle = QLabel("智能定容 · 本地处理 · 清晰度优先")
+        subtitle = QLabel("分区编辑 · 智能定容 · 本地处理")
         subtitle.setObjectName("appSubtitle")
         brand.addWidget(title)
         brand.addWidget(subtitle)
@@ -2535,6 +2598,10 @@ class MainWindow(QMainWindow):
         self.merge_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.merge_button.clicked.connect(lambda: self.open_merge_dialog())
         file_layout.addWidget(self.merge_button)
+        self.edit_button = QPushButton("编辑 PDF · 自动分区")
+        self.edit_button.setProperty("quiet", True)
+        self.edit_button.clicked.connect(self.open_pdf_editor)
+        file_layout.addWidget(self.edit_button)
         sidebar_layout.addWidget(file_card)
 
         target_card = self._card()
@@ -2812,6 +2879,35 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self._load_input(Path(selected))
+
+    def open_pdf_editor(self) -> None:
+        if self.assets_loading or self.processing_busy or self._closing:
+            Toast(self, "请等待当前任务结束后编辑 PDF")
+            return
+        source = self.input_path
+        if source is None:
+            selected, _ = QFileDialog.getOpenFileName(self, "选择要编辑的 PDF", "", "PDF 文件 (*.pdf)")
+            if not selected:
+                return
+            source = Path(selected)
+        try:
+            state = get_pdf_source_state(source)
+            if source == self.input_path and self.input_source_state is not None and state != self.input_source_state:
+                raise CompressionError("源 PDF 已发生变化，请重新加载后编辑。")
+        except CompressionError as exc:
+            self._show_error(str(exc))
+            return
+        from qt_editor import PDFEditorDialog
+
+        dialog = PDFEditorDialog(source, state, PDFEditorWorker, self)
+        dialog.exec()
+        if dialog.last_output:
+            self.last_output = dialog.last_output
+            self.open_button.setEnabled(True)
+            if dialog.load_after and not self._closing:
+                self._load_input(dialog.last_output)
+                self.result_label.setText("编辑副本已保存。读取完成后可设置目标大小，继续压缩。")
+        dialog.deleteLater()
 
     def open_merge_dialog(self, initial_paths: list[Path] | None = None) -> None:
         compression_running = bool(
@@ -3486,6 +3582,7 @@ class MainWindow(QMainWindow):
         self.processing_busy = busy
         self.file_button.setEnabled(not busy)
         self.merge_button.setEnabled(not busy)
+        self.edit_button.setEnabled(not busy)
         self.output_button.setEnabled(not busy)
         self.target_edit.setEnabled(not busy)
         self.unit_combo.setEnabled(not busy)
@@ -3632,6 +3729,9 @@ def main() -> None:
         raise SystemExit(0 if find_native_worker() is not None else 8)
     if "--workflow-self-test" in sys.argv:
         raise SystemExit(_workflow_self_test())
+    if "--editor-self-test" in sys.argv:
+        from qt_editor import editor_self_test
+        raise SystemExit(editor_self_test(PDFEditorWorker, APP_STYLE))
     if sys.platform.startswith("win"):
         try:
             from ctypes import windll

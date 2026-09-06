@@ -1,6 +1,6 @@
 # Security policy and architecture
 
-PDF files are complex, attacker-controlled inputs. PDF Size Reducer v3.9 uses
+PDF files are complex, attacker-controlled inputs. PDF Size Reducer uses
 a Rust guard in front of the high-speed C++/MuPDF renderer and merger. Request parsing,
 validation, hashing, and protocol framing stay in safe Rust; `unsafe` is limited
 to the small Windows Job Object FFI boundary. This reduces the exposed
@@ -44,6 +44,15 @@ falls back to the tested Python/MuPDF path.
 
 ## Scope and limitations
 
+- The v3.10 text/page editor analyzes, previews and writes through separate
+  PyMuPDF processes inside the parent-owned Windows lifetime job. It does not
+  route arbitrary editing operations through the Rust/C++ guard. Original files
+  cannot be overwritten; only a validated, uncancelled result is installed by
+  the parent. Signature-field documents, pre-existing redaction annotations on
+  edited pages and unsafe text/form overlaps are rejected. Deleting all pages
+  is also rejected. This is not OCR or a forensic sanitization tool: it does not
+  scrub document metadata, attachments or accessibility structure. Review the
+  [editing limits](docs/EDITING.md) before handling sensitive documents.
 - Desktop writers and high-resolution previews enter an additional parent-owned
   Windows Job Object before processing starts. Closing that job terminates the
   worker and its inherited descendants. This manages process lifetime; the

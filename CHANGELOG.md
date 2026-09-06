@@ -2,6 +2,25 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.10.0 - 2026-09-07
+
+### PDF text editing and page management
+
+- Add a visual, region-based PDF editor with automatic paragraph/column separation and image-area detection. Replace text in a selected region or draw a box for new text.
+- Match nearby text's font, size, color, alignment and line spacing. Reuse embedded fonts with sufficient glyph coverage; explicitly report local-family or Latin/CJK substitutions. Preserve supported replacement baselines and reject overflow instead of silently shrinking or clipping text.
+- Preview the actual PDF typesetting before export. Reject neighboring-text/form collisions and unsafe text regions; retain backgrounds and restore links affected by text-only redaction.
+- Delete or restore the current page, or manage multiple original page ranges. Retain source page numbering in the draft, support undo/redo across both text and page operations, and refuse deletion of every page.
+- Save edited documents as separate PDFs, with an optional handoff to the existing accelerated compression workspace. Editing runs in cancellable isolated processes and uses the parent-owned final output installation checks.
+- Protect signature-bearing PDFs and pages with existing redaction annotations. Explain the limits for scanned text, mixed styles, structured tables, complex scripts and geometric region detection.
+- Raise the source dependency minimum to PyMuPDF 1.26. The existing matched protocol-3 Rust/C++ worker bundle is unchanged.
+
+### Verification
+
+- 135 Python regression tests passed, including text/background/link preservation, font reuse and fallback, rotated/cropped pages, page deletion and link-target remapping, stale sources, overflow, cancellation, undo/redo and real Qt worker lifecycle checks.
+- Add `--editor-self-test` for the source and packaged application. It exercises the actual editor, spawned preview/writer, bilingual text insertion, page deletion and compression handoff.
+- The Windows executable passed native-worker discovery, the existing workflow smoke test and the new editor smoke test, all with exit code 0.
+- This is an editing/workflow release, not a new compression speedup claim.
+
 ## 3.9.1 - 2026-09-06
 
 ### Task completion and cancellation
