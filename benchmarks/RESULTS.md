@@ -1,5 +1,20 @@
 # Current benchmark results
 
+## v3.9.1 task-lifecycle verification
+
+Measured on 2026-09-06 using the existing 97.92 MiB / 48-page stress PDF.
+The desktop loaded all 48 assets and their thumbnails in 5.905 seconds; the
+maximum event-loop gap was 34.02 ms and main-process peak working set was
+114.59 MiB. A separate run requesting cancellation after 500 ms finished
+cleanly after 0.678 seconds. These UI measurements include process startup and
+interface transitions and are not directly comparable to the engine-only scan
+times below.
+
+All 80 Python tests passed, including cancellation immediately before final
+installation, cleanup after a partially written/cancelled/crashed task, actual
+Windows child/grandchild termination, native planner preservation, source-file
+changes, preview closure/reuse, and scanner/thumbnail startup failures.
+
 ## v3.9 workflow regression and scan optimization
 
 Measured on 2026-09-05 with Python 3.12.10, PyMuPDF 1.28.2, and the same

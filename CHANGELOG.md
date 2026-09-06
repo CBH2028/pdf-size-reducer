@@ -2,6 +2,30 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.9.1 - 2026-09-06
+
+### Task completion and cancellation
+
+- Desktop merge and compression workers now write inside a parent-owned temporary workspace. Only the parent installs the completed PDF, after checking source-file state, output size, and cancellation again. A cancelled or crashed child cannot replace an existing destination with a partial result.
+- Give writers a three-second cooperative cancellation window, then stop the unresponsive process tree on Windows. A parent-owned Windows Job Object covers both the Python worker and its native descendants; the child waits for attachment before processing PDFs.
+- Check cancellation and target size before the final output replacement, including the native Figure planner's final progress checkpoint.
+- Detect ordinary source-file edits or replacement during scanning, between selection and compression, and before output installation. Ask the user to reload stale selections instead of applying old object numbers to a changed PDF.
+
+### Preview and interface
+
+- Render high-resolution previews in separate cancellable processes. Closing a preview stops its rendering job; opening the same Figure again reuses the existing preview window.
+- Keep large preview PNGs in temporary files instead of passing them through the process message queue.
+- Report scanner and thumbnail process-start failures and clean up processes that already started. Avoid duplicate thumbnail error messages after partial progress.
+- Keep desktop progress monotonic and reserve 100% for successful final installation.
+
+### Verification
+
+- Add regressions for stale source selections, mid-operation edits, final-checkpoint cancellation, interrupted temporary writers, process-tree termination, preview closure/reuse, and worker startup failures.
+- Extend the source/executable workflow smoke test to include high-resolution preview, the native Figure planner inside the desktop job, and cancellation immediately before output installation.
+- Native protocol 3 and the matched Rust/C++ worker bundle remain compatible.
+- All 80 Python regression tests passed. The 97.92 MiB / 48-page UI check loaded all 48 assets and thumbnails in 5.905 seconds, with a maximum measured event-loop gap of 34.02 ms. A separate scan cancellation check completed cleanly.
+- The packaged Windows executable passed both native-worker discovery and the extended workflow smoke test.
+
 ## 3.9.0 - 2026-09-05
 
 ### Reliability and document preservation

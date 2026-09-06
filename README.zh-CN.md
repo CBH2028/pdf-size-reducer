@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-63%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-80%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -63,7 +63,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 | 清晰度优先 | 采用接近 PowerPoint 导出的高分辨率、适度 JPEG 压缩策略，优先保护小字符和细线。 |
 | 黑底风险可规避 | 大多数透明 Figure 会转为白底 RGB；如复杂 PPT 矢量图仍出现黑底，可取消勾选该图并保持原样。 |
 | 商业级桌面界面 | 玻璃感顶栏、结构化流程卡、动态状态灯、渐变主操作、缩略图淡入、悬停光影、惯性平滑滚动和高 DPI 适配。 |
-| 始终可响应 | Figure 扫描、缩略图、合并和压缩使用隔离子进程，提供进度与协作式取消；高清预览也在后台生成。 |
+| 始终可响应 | 扫描、缩略图、高清预览、合并和压缩均在独立进程执行。关闭预览会取消渲染；压缩或合并取消后若后台仍无响应，会在宽限期结束后停止该任务的进程树。 |
 | C++ 高速规划器 | C++17/MuPDF worker 从一次母版光栅化生成每张 Figure 的完整质量阶梯，再由全局预算规划器选择最清晰的组合。 |
 | 加固的原生边界 | Rust 守卫以内存安全的方式解析请求，核验原生后端和 DLL，将任务限制在私有工作区，并施加 Windows 进程与内存限制。 |
 
@@ -96,6 +96,8 @@ py -3 -m venv .venv
 6. 提交前浏览输出 PDF；若某张 PPT 矢量图出现黑底，取消勾选它后重新处理。
 
 原 PDF 始终保持不变。如果输出文件已存在，程序会先询问是否覆盖。
+
+如果源 PDF 在扫描后被其他程序保存或替换，请重新加载再进行压缩，避免旧的图形选择对应到新内容。桌面任务先在临时工作区生成结果，主程序确认成功且未取消后才保存到最终位置；取消或后台崩溃时，已有输出不会被半成品替换。
 
 ### 合并 PDF 并压缩结果
 

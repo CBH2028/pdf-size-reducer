@@ -44,6 +44,14 @@ falls back to the tested Python/MuPDF path.
 
 ## Scope and limitations
 
+- Desktop writers and high-resolution previews enter an additional parent-owned
+  Windows Job Object before processing starts. Closing that job terminates the
+  worker and its inherited descendants. This manages process lifetime; the
+  existing Rust guard still supplies its own request and resource limits.
+- Final desktop output replacement runs in the parent after the child stops.
+  File identity, size, and modification-time checks detect ordinary concurrent
+  source edits. These metadata checks are not content hashes or filesystem
+  locks and do not prevent a malicious process from racing or spoofing them.
 - MuPDF still parses the document in native C/C++ code. The Job Object limits
   resource use and child processes; it does not restrict filesystem or network
   access under the current user's account.

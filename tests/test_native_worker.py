@@ -425,10 +425,12 @@ def test_cpp_backend_rejects_unsafe_manifest_without_guard(
     assert not (output / "figure.jpg").exists()
 
 
+@pytest.mark.parametrize("final_action", ["complete", "cancel", "source_edit"])
 def test_compressor_uses_global_native_planner(
     tmp_path: Path,
     native_binary: Path,
     monkeypatch: pytest.MonkeyPatch,
+    final_action: str,
 ) -> None:
     source = tmp_path / "planner-source.pdf"
     output = tmp_path / "planner-output.pdf"
@@ -457,13 +459,34 @@ def test_compressor_uses_global_native_planner(
 
     monkeypatch.delenv("PDF_SIZE_REDUCER_DISABLE_NATIVE", raising=False)
     monkeypatch.delenv("PDF_SIZE_REDUCER_DISABLE_PLANNER", raising=False)
+    cancel_event = threading.Event()
+
+    def final_progress(value, _message):
+        if value == 96 and final_action == "cancel":
+            cancel_event.set()
+        elif value == 96 and final_action == "source_edit":
+            with source.open("ab") as stream:
+                stream.write(b"\n% external edit\n")
+
+    options = dict(
+        progress_callback=final_progress,
+        cancel_event=cancel_event,
+        selected_image_xrefs=set(),
+        selected_vector_pages=set(),
+        selected_figure_regions={0: [tuple(rectangle)]},
+    )
+    if final_action != "complete":
+        output.write_bytes(b"previous output")
+        error = compressor.CompressionCancelled if final_action == "cancel" else compressor.CompressionError
+        with pytest.raises(error):
+            compress_pdf(source, output, 180_000, **options)
+        assert output.read_bytes() == b"previous output"
+        return
     result = compress_pdf(
         source,
         output,
         180_000,
-        selected_image_xrefs=set(),
-        selected_vector_pages=set(),
-        selected_figure_regions={0: [tuple(rectangle)]},
+        **options,
     )
 
     assert result.planned_mode is True

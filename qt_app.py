@@ -10,6 +10,8 @@ import math
 import multiprocessing
 import queue
 import time
+import tempfile
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -81,19 +83,23 @@ from compressor import (
     MergeResult,
     NoCompressibleImagesError,
     PDFAsset,
+    PDFSourceState,
     TargetTooSmallError,
     compress_pdf,
     format_bytes,
+    get_pdf_source_state,
     iter_asset_thumbnails,
     list_pdf_assets,
     merge_pdfs,
     render_asset_image,
+    _atomic_install,
 )
 from native_worker import find_native_worker
+from process_jobs import WorkerJob, gated_worker
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.9.0"
+APP_VERSION = "3.9.1"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -1321,6 +1327,7 @@ def _asset_scan_process(
 ) -> None:
     """Inspect a PDF outside the GUI process so dense pages cannot hold its GIL."""
     try:
+        state_before = get_pdf_source_state(path)
         assets, page_count = list_pdf_assets(
             Path(path),
             progress_callback=lambda value, message: result_queue.put(
@@ -1328,17 +1335,21 @@ def _asset_scan_process(
             ),
             cancel_event=cancel_event,
         )
+        if get_pdf_source_state(path) != state_before:
+            raise CompressionError(
+                "源 PDF 在扫描期间发生变化，请重新加载后再试。"
+            )
     except CompressionCancelled:
         result_queue.put(("cancelled",))
     except Exception as exc:
         result_queue.put(("failed", str(exc)))
     else:
-        result_queue.put(("completed", assets, page_count))
+        result_queue.put(("completed", assets, page_count, state_before))
 
 
 class AssetScanWorker(QObject):
     progress = Signal(int, int, str)
-    completed = Signal(int, object, object, int)
+    completed = Signal(int, object, object, int, object)
     failed = Signal(int, object, str)
     cancelled = Signal(int, object)
 
@@ -1366,11 +1377,16 @@ class AssetScanWorker(QObject):
             name="PDFAssetScanner",
             daemon=True,
         )
-        process.start()
+        started = False
         terminal_received = False
         cancel_started: float | None = None
         process_exited_at: float | None = None
         try:
+            if self.cancel_event.is_set():
+                self.cancelled.emit(self.generation, self.path)
+                return
+            process.start()
+            started = True
             while not terminal_received:
                 if self.cancel_event.is_set():
                     process_cancel_event.set()
@@ -1406,12 +1422,13 @@ class AssetScanWorker(QObject):
                     value, text = payload
                     self.progress.emit(self.generation, int(value), str(text))
                 elif kind == "completed":
-                    assets, page_count = payload
+                    assets, page_count, source_state = payload
                     self.completed.emit(
                         self.generation,
                         self.path,
                         assets,
                         int(page_count),
+                        source_state,
                     )
                     terminal_received = True
                 elif kind == "cancelled":
@@ -1422,13 +1439,18 @@ class AssetScanWorker(QObject):
                         self.generation, self.path, str(payload[0])
                     )
                     terminal_received = True
+        except Exception as exc:
+            self.failed.emit(self.generation, self.path, f"无法完成 PDF 扫描：{exc}")
         finally:
             process_cancel_event.set()
             if process.is_alive():
                 process.join(timeout=1.0)
             if process.is_alive():
                 process.terminate()
-            process.join(timeout=1.0)
+            if started:
+                process.join(timeout=1.0)
+            if not process.is_alive():
+                process.close()
             result_queue.close()
             result_queue.join_thread()
             self._process_cancel_event = None
@@ -1442,6 +1464,7 @@ def _thumbnail_process(
     cancel_event,
 ) -> None:
     """Render one partition while keeping a single PDF document open."""
+    delivered = set()
     try:
         for index, data, error_message in iter_asset_thumbnails(
             Path(path),
@@ -1453,9 +1476,11 @@ def _thumbnail_process(
                 result_queue.put(("ready_error", index, error_message))
             else:
                 result_queue.put(("ready", index, data))
+            delivered.add(index)
     except Exception as exc:
         for index, _asset in indexed_assets:
-            result_queue.put(("ready_error", index, str(exc)))
+            if index not in delivered:
+                result_queue.put(("ready_error", index, str(exc)))
     finally:
         result_queue.put(("worker_done", worker_number))
 
@@ -1523,14 +1548,19 @@ class ThumbnailWorker(QObject):
             )
             for worker_number in range(worker_count)
         ]
-        for process in processes:
-            process.start()
+        started_processes = []
         terminal_received = False
         process_exited_at: float | None = None
         cancel_started: float | None = None
         completed_items = 0
         completed_workers: set[int] = set()
         try:
+            if self.cancel_event.is_set():
+                self.done.emit(self.generation)
+                return
+            for process in processes:
+                process.start()
+                started_processes.append(process)
             while not terminal_received:
                 if self.cancel_event.is_set():
                     process_cancel_event.set()
@@ -1577,6 +1607,10 @@ class ThumbnailWorker(QObject):
                 ):
                     self.done.emit(self.generation)
                     terminal_received = True
+        except Exception as exc:
+            for index in range(len(self.assets)):
+                self.ready.emit(self.generation, index, RuntimeError(f"无法生成缩略图：{exc}"))
+            self.done.emit(self.generation)
         finally:
             process_cancel_event.set()
             for process in processes:
@@ -1584,34 +1618,52 @@ class ThumbnailWorker(QObject):
                     process.join(timeout=0.4)
                 if process.is_alive():
                     process.terminate()
-                process.join(timeout=0.6)
+                if process in started_processes:
+                    process.join(timeout=0.6)
+                if not process.is_alive():
+                    process.close()
             result_queue.close()
             result_queue.join_thread()
             self._process_cancel_event = None
 
 
-def _run_pdf_process(worker, target, arguments: tuple, name: str) -> None:
-    """Monitor a writer outside Qt while retaining cooperative cancellation."""
+def _run_pdf_process(
+    worker, target, arguments: tuple, name: str, *, complete=None, cancel_after=3.0,
+) -> None:
+    """Monitor one job; final destinations are owned by the caller, not the child."""
     context = multiprocessing.get_context("spawn")
     result_queue = context.Queue()
     process_cancel = context.Event()
+    start_event = context.Event()
     process = context.Process(
-        target=target,
-        args=(*arguments, result_queue, process_cancel),
+        target=gated_worker,
+        args=(target, arguments, result_queue, process_cancel, start_event),
         name=name,
         daemon=True,
     )
     started = False
+    job = None
+    terminal = None
     try:
         if worker.cancel_event.is_set():
-            worker.cancelled.emit()
+            terminal = ("cancelled",)
             return
+        job = WorkerJob()
         process.start()
         started = True
+        job.attach(process)
+        start_event.set()
         exited_at = None
+        cancel_started = None
+        last_progress = 0
         while True:
             if worker.cancel_event.is_set():
                 process_cancel.set()
+                if cancel_started is None:
+                    cancel_started = time.monotonic()
+                elif time.monotonic() - cancel_started >= cancel_after:
+                    terminal = ("cancelled",)
+                    break
             try:
                 kind, *payload = result_queue.get(timeout=0.05)
             except queue.Empty:
@@ -1620,37 +1672,95 @@ def _run_pdf_process(worker, target, arguments: tuple, name: str) -> None:
                         exited_at = time.monotonic()
                     elif time.monotonic() - exited_at > 0.5:
                         if worker.cancel_event.is_set():
-                            worker.cancelled.emit()
+                            terminal = ("cancelled",)
                         else:
-                            worker.failed.emit("PDF 后台处理进程意外结束。")
+                            terminal = ("failed", "PDF 后台处理进程意外结束。")
                         break
                 continue
             if kind == "progress":
-                worker.progress.emit(int(payload[0]), str(payload[1]))
+                last_progress = max(last_progress, min(99, int(payload[0])))
+                worker.progress.emit(last_progress, str(payload[1]))
             elif kind == "completed":
-                worker.completed.emit(payload[0])
+                if worker.cancel_event.is_set():
+                    terminal = ("cancelled",)
+                else:
+                    terminal = ("completed", payload[0])
                 break
             elif kind == "cancelled":
-                worker.cancelled.emit()
+                terminal = ("cancelled",)
                 break
             elif kind == "failed":
-                worker.failed.emit(str(payload[0]))
+                terminal = ("failed", str(payload[0]))
                 break
     except Exception as exc:
-        worker.failed.emit(f"后台处理失败：{exc}")
+        terminal = ("failed", f"后台处理失败：{exc}")
     finally:
         process_cancel.set()
+        if job is not None:
+            job.close()
         if started:
-            # A terminal message is sent only after the operation has closed
-            # its native session and settled atomic output installation.
-            process.join(timeout=3)
+            process.join(timeout=0.5)
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=2)
             if not process.is_alive():
                 process.close()
+        else:
+            process.close()
         result_queue.close()
         result_queue.join_thread()
+        # Emit only after stopping the child and all its native descendants.
+        if terminal is not None:
+            kind, *payload = terminal
+            if kind == "completed":
+                try:
+                    if worker.cancel_event.is_set():
+                        raise CompressionCancelled("任务已取消。")
+                    result = complete(payload[0]) if complete else payload[0]
+                except CompressionCancelled:
+                    worker.cancelled.emit()
+                except Exception as exc:
+                    worker.failed.emit(str(exc))
+                else:
+                    worker.completed.emit(result)
+            elif kind == "cancelled":
+                worker.cancelled.emit()
+            else:
+                worker.failed.emit(payload[0])
+
+
+def _run_staged_pdf_process(worker, target, arguments: tuple, name: str) -> None:
+    """Only this parent may replace the user's output, including after cancellation."""
+    try:
+        source_arg, destination_arg, *remaining = arguments
+        sources = source_arg if isinstance(source_arg, (tuple, list)) else [source_arg]
+        destination = Path(destination_arg).expanduser().resolve()
+        source_states = {Path(path).expanduser().resolve(): get_pdf_source_state(path) for path in sources}
+        if destination in source_states:
+            raise CompressionError("输出文件不能覆盖源 PDF。")
+        if destination.suffix.lower() != ".pdf":
+            raise CompressionError("结果必须保存为 PDF 文件。")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".pdf_desktop_job_", dir=destination.parent) as directory:
+            candidate = Path(directory) / "result.pdf"
+
+            def install(result):
+                if result.output_path.resolve() != candidate or not candidate.is_file():
+                    raise CompressionError("后台任务未生成有效的候选文件。")
+                _atomic_install(
+                    candidate, destination, source_states=source_states,
+                    cancel_event=worker.cancel_event,
+                    max_bytes=result.target_bytes if isinstance(result, CompressionResult) else None,
+                )
+                return replace(result, output_path=destination)
+
+            _run_pdf_process(
+                worker, target, (source_arg, candidate, *remaining), name, complete=install,
+            )
+    except CompressionCancelled:
+        worker.cancelled.emit()
+    except Exception as exc:
+        worker.failed.emit(str(exc))
 
 
 def _compression_process(source, destination, target, options, result_queue, cancel_event):
@@ -1683,6 +1793,7 @@ class CompressionWorker(QObject):
         image_xrefs: set[int],
         vector_pages: set[int],
         figure_regions: dict[int, list[tuple[float, float, float, float]]],
+        source_state: PDFSourceState | None = None,
     ) -> None:
         super().__init__()
         self.source = source
@@ -1691,6 +1802,7 @@ class CompressionWorker(QObject):
         self.image_xrefs = image_xrefs
         self.vector_pages = vector_pages
         self.figure_regions = figure_regions
+        self.source_state = source_state
         self.cancel_event = threading.Event()
 
     def cancel(self) -> None:
@@ -1702,8 +1814,9 @@ class CompressionWorker(QObject):
             "selected_image_xrefs": self.image_xrefs,
             "selected_vector_pages": self.vector_pages,
             "selected_figure_regions": self.figure_regions,
+            "expected_source_state": self.source_state,
         }
-        _run_pdf_process(
+        _run_staged_pdf_process(
             self, _compression_process,
             (self.source, self.destination, self.target, options), "PDFCompressor",
         )
@@ -1745,28 +1858,61 @@ class MergeWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        _run_pdf_process(
+        _run_staged_pdf_process(
             self, _merge_process, (self.sources, self.destination), "PDFMerger"
         )
 
 
+def _preview_process(path, asset, destination, source_state, result_queue, cancel_event):
+    try:
+        if cancel_event.is_set():
+            raise CompressionCancelled("预览已取消。")
+        before = get_pdf_source_state(path)
+        if source_state is not None and before != source_state:
+            raise CompressionError("源 PDF 已更改，请重新加载后预览。")
+        data = render_asset_image(path, asset, dpi=240)
+        if get_pdf_source_state(path) != before:
+            raise CompressionError("源 PDF 已更改，请重新加载后预览。")
+        if cancel_event.is_set():
+            raise CompressionCancelled("预览已取消。")
+        Path(destination).write_bytes(data)
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        # Large PNGs stay off the IPC pipe, which also keeps cancellation safe.
+        result_queue.put(("completed", None))
+
+
 class PreviewRenderWorker(QObject):
+    progress = Signal(int, str)
     completed = Signal(object)
     failed = Signal(str)
+    cancelled = Signal()
 
-    def __init__(self, path: Path, asset: PDFAsset) -> None:
+    def __init__(self, path: Path, asset: PDFAsset, source_state=None) -> None:
         super().__init__()
         self.path = path
         self.asset = asset
+        self.source_state = source_state
+        self.cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
 
     @Slot()
     def run(self) -> None:
         try:
-            data = render_asset_image(self.path, self.asset, dpi=240)
+            with tempfile.TemporaryDirectory(prefix="pdf-preview-") as directory:
+                image_path = Path(directory) / "preview.png"
+                _run_pdf_process(
+                    self, _preview_process,
+                    (self.path, self.asset, image_path, self.source_state), "PDFPreview",
+                    complete=lambda _result: image_path.read_bytes(), cancel_after=1.0,
+                )
         except Exception as exc:
             self.failed.emit(str(exc))
-        else:
-            self.completed.emit(data)
 
 
 class SmoothGraphicsView(QGraphicsView):
@@ -1802,10 +1948,13 @@ class SmoothGraphicsView(QGraphicsView):
 
 
 class PreviewDialog(QDialog):
-    def __init__(self, path: Path, asset: PDFAsset, parent: QWidget) -> None:
+    def __init__(self, path: Path, asset: PDFAsset, parent: QWidget, source_state=None) -> None:
         super().__init__(parent)
         self.path = path
         self.asset = asset
+        self.source_state = source_state
+        self._closing = False
+        self.finished.connect(self._cancel_render)
         self.thread: QThread | None = None
         self.worker: PreviewRenderWorker | None = None
         self.pixmap_item: QGraphicsPixmapItem | None = None
@@ -1885,18 +2034,37 @@ class PreviewDialog(QDialog):
 
     def _start_render(self) -> None:
         self.thread = QThread(self)
-        self.worker = PreviewRenderWorker(self.path, self.asset)
+        self.worker = PreviewRenderWorker(self.path, self.asset, self.source_state)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.completed.connect(self._render_completed)
         self.worker.failed.connect(self._render_failed)
         self.worker.completed.connect(self.thread.quit)
         self.worker.failed.connect(self.thread.quit)
+        self.worker.cancelled.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._render_thread_finished)
         self.thread.start()
+
+    def _cancel_render(self, _result=0) -> None:
+        self._closing = True
+        if self.worker is not None:
+            self.worker.cancel()
+        if self.thread is None:
+            self.deleteLater()
+
+    def _render_thread_finished(self) -> None:
+        thread, self.thread = self.thread, None
+        self.worker = None
+        if thread is not None:
+            thread.deleteLater()
+        if self._closing:
+            self.deleteLater()
 
     @Slot(object)
     def _render_completed(self, data: bytes) -> None:
+        if self._closing:
+            return
         pixmap = QPixmap()
         if not pixmap.loadFromData(data):
             self._render_failed("无法读取预览图像。")
@@ -1912,6 +2080,8 @@ class PreviewDialog(QDialog):
 
     @Slot(str)
     def _render_failed(self, message: str) -> None:
+        if self._closing:
+            return
         self.loading_orb.stop()
         self.loading_message.setText("生成失败，请关闭窗口后重试。")
         self.loading_message.setStyleSheet(f"color: {ERROR};")
@@ -2210,6 +2380,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.input_path: Path | None = None
+        self.input_source_state: PDFSourceState | None = None
         self.output_path: Path | None = None
         self.output_custom = False
         self.last_output: Path | None = None
@@ -2763,6 +2934,7 @@ class MainWindow(QMainWindow):
             self._show_error("请选择一个存在的 PDF 文件。")
             return
         self.input_path = path
+        self.input_source_state = None
         self.output_custom = False
         self.input_info.setText(f"{path.name}  ·  {format_bytes(path.stat().st_size)}")
         self.scan_generation += 1
@@ -2835,13 +3007,19 @@ class MainWindow(QMainWindow):
         if self.loading_panel:
             self.loading_panel.update_progress(value, message)
 
-    @Slot(int, object, object, int)
+    @Slot(int, object, object, int, object)
     def _assets_loaded(
-        self, generation: int, path: Path, assets: list[PDFAsset], page_count: int
+        self,
+        generation: int,
+        path: Path,
+        assets: list[PDFAsset],
+        page_count: int,
+        source_state: PDFSourceState,
     ) -> None:
         if generation != self.scan_generation or path != self.input_path:
             return
         self.assets = assets
+        self.input_source_state = source_state
         self.selected_asset_keys = {asset.key for asset in assets}
         self.progress_bar.set_smooth_value(100)
         if self.loading_panel:
@@ -2876,6 +3054,7 @@ class MainWindow(QMainWindow):
         self.merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
+        self.input_source_state = None
         self.selected_asset_keys.clear()
         self.start_button.setEnabled(True)
         self.selection_info.setText(f"Figure 识别失败：{message}")
@@ -2894,6 +3073,7 @@ class MainWindow(QMainWindow):
         self.merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
+        self.input_source_state = None
         self.selected_asset_keys.clear()
         self.start_button.setEnabled(False)
         self.selection_info.setText("读取已停止，原 PDF 没有发生任何变化。")
@@ -3049,7 +3229,13 @@ class MainWindow(QMainWindow):
     def _open_preview(self, asset: PDFAsset) -> None:
         if not self.input_path:
             return
-        dialog = PreviewDialog(self.input_path, asset, self)
+        for existing in self.preview_dialogs:
+            if existing.path == self.input_path and existing.asset.key == asset.key and not existing._closing:
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return
+        dialog = PreviewDialog(self.input_path, asset, self, self.input_source_state)
         self.preview_dialogs.append(dialog)
         dialog.finished.connect(
             lambda _result, current=dialog: self._remove_preview_dialog(current)
@@ -3140,6 +3326,8 @@ class MainWindow(QMainWindow):
                 raise ValueError("正在识别 PDF 中的 Figure，请稍候。")
             if not self.input_path or not self.input_path.is_file():
                 raise ValueError("请先选择一个存在的 PDF 文件。")
+            if self.input_source_state is not None and get_pdf_source_state(self.input_path) != self.input_source_state:
+                raise ValueError("源 PDF 已更改，请重新加载后再压缩。")
             target = self._target_bytes()
             if not self.output_path:
                 self._set_default_output()
@@ -3199,6 +3387,7 @@ class MainWindow(QMainWindow):
             image_xrefs,
             vector_pages,
             figure_regions,
+            self.input_source_state,
         )
         self.compression_worker.moveToThread(self.compression_thread)
         self.compression_thread.started.connect(self.compression_worker.run)
@@ -3324,6 +3513,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closing = True
+        for dialog in list(self.preview_dialogs):
+            dialog.close()
         if self.scan_worker:
             self.scan_worker.cancel()
         if self.thumbnail_worker:
@@ -3343,8 +3534,9 @@ class MainWindow(QMainWindow):
 
 def _workflow_self_test() -> int:
     """Exercise the real spawned writers in source and frozen Windows builds."""
-    import tempfile
     import pymupdf as fitz
+    from PIL import Image
+    from io import BytesIO
 
     with tempfile.TemporaryDirectory(prefix="pdf-workflow-self-test-") as directory:
         workspace = Path(directory)
@@ -3383,6 +3575,55 @@ def _workflow_self_test() -> int:
                 for index in range(2)
             ):
                 return 11
+        preview = PreviewRenderWorker(
+            compressed, PDFAsset("self-test", "figure", (0,), rect=(10, 10, 300, 100)),
+            get_pdf_source_state(compressed),
+        )
+        preview.completed.connect(results.append)
+        preview.failed.connect(failures.append)
+        preview.run()
+        if failures or len(results) != 3 or not results[-1].startswith(b"\x89PNG"):
+            return 12
+
+        # Exercise the native Figure planner inside the outer Windows job,
+        # not only the lossless Python path and native merge command.
+        native_source, native_output = workspace / "native.pdf", workspace / "native-out.pdf"
+        bitmap = Image.new("RGB", (640, 320))
+        bitmap.putdata([
+            ((x * 17 + y * 29) % 256, (x * 37 + y * 11) % 256, (x * 7 + y * 43) % 256)
+            for y in range(320) for x in range(640)
+        ])
+        buffer = BytesIO()
+        bitmap.save(buffer, format="PNG")
+        with fitz.open() as document:
+            page = document.new_page(width=360, height=240)
+            page.insert_image(fitz.Rect(20, 20, 340, 180), stream=buffer.getvalue())
+            page.draw_rect(fitz.Rect(20, 20, 340, 200), color=(0, 0, 1), width=2)
+            page.insert_text((35, 55), "Searchable planner test")
+            document.save(native_source)
+        planner = CompressionWorker(
+            native_source, native_output, 180_000, set(), set(),
+            {0: [(20, 20, 340, 200)]}, get_pdf_source_state(native_source),
+        )
+        planner.completed.connect(results.append)
+        planner.failed.connect(failures.append)
+        planner.run()
+        if failures or len(results) != 4 or not results[-1].native_worker_used or not results[-1].planned_mode:
+            return 13
+        with fitz.open(native_output) as document:
+            if "Searchable planner test" not in document[0].get_text():
+                return 14
+
+        cancelled = []
+        # An existing destination survives cancellation at the final checkpoint.
+        previous = compressed.read_bytes()
+        cancellation = MergeWorker(sources, compressed)
+        cancellation.cancelled.connect(lambda: cancelled.append(True))
+        cancellation.failed.connect(failures.append)
+        cancellation.progress.connect(lambda value, _text: cancellation.cancel() if value == 99 else None)
+        cancellation.run()
+        if failures or not cancelled or compressed.read_bytes() != previous:
+            return 15
     return 0
 
 

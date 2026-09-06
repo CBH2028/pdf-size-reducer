@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-63%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-80%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -69,7 +69,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Visual selection | Browse full-view thumbnails, type, and estimated storage in the main window. Click any card for a zoomable preview rendered at about 240 DPI. |
 | Clarity first | High resolution and moderate JPEG compression are preferred to protect small characters and thin lines. |
 | Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
-| Responsive interface | Figure scanning, thumbnails, merging, and compression run in isolated processes with progress and cooperative cancellation. |
+| Responsive interface | Scanning, thumbnails, high-resolution previews, merging, and compression run in separate processes. Closing a preview cancels its render; stuck desktop writers can be stopped after a cancellation grace period. |
 | Native high-speed planner | A C++17/MuPDF worker builds each Figure's complete quality ladder from one master rasterization; a global byte-budget planner then selects the clearest combination. |
 | Hardened native boundary | A Rust guard performs memory-safe request parsing, verifies the native backend and DLL, confines jobs to a private workspace, and applies Windows process and memory limits. |
 | Commercial-grade desktop UI | A glass-like header, structured workflow cards, animated status, a gradient primary action, progressive thumbnails, hover feedback, smooth scrolling, and high-DPI support. |
@@ -103,6 +103,12 @@ On Windows, `start_pdf_tool.bat` can also create the isolated environment, insta
 6. Review the generated PDF. If a PowerPoint vector figure has a black background, uncheck it and run the task again.
 
 The source PDF is never overwritten. If the selected output path already exists, the app asks before replacing it.
+
+If another application saves or replaces the source after it was scanned, reload
+the PDF before compressing it. Source-state checks prevent ordinary file edits
+from silently applying old Figure selections to new content. Desktop tasks
+prepare output in temporary files; the application installs the final PDF only
+after successful completion and a final cancellation check.
 
 ### Merge PDFs, then compress the result
 
@@ -173,7 +179,8 @@ Build the single-file Windows executable with:
 The result is written to `dist\PDF_Size_Reducer.exe`.
 
 Use `PDF_Size_Reducer.exe --workflow-self-test` for a headless packaged smoke
-test of the real spawned merge and compression jobs (exit code 0 means success).
+test of guarded merging, lossless compression, preview, native Figure planning,
+and cancellation before final output installation (exit code 0 means success).
 This complements `--native-worker-self-test`, which only checks worker discovery.
 
 ## Project structure
@@ -183,6 +190,7 @@ pdf-size-reducer/
 ├── qt_app.py              # Qt 6 desktop UI and background jobs
 ├── compressor.py          # Figure discovery, rendering, and targeting engine
 ├── native_worker.py       # Versioned bridge, cancellation, and safe fallback
+├── process_jobs.py        # Lifetime management for desktop process trees
 ├── native_worker/         # Rust guard plus C++17/MuPDF high-speed backend
 ├── SECURITY.md            # Native-worker threat model and reporting policy
 ├── tests/                 # Compression and content-preservation regressions

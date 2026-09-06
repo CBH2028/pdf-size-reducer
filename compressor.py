@@ -76,6 +76,42 @@ class PlannerUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True)
+class PDFSourceState:
+    """Filesystem identity captured when a PDF is inspected or selected."""
+
+    size: int
+    modified_ns: int
+    device: int
+    inode: int
+
+
+def get_pdf_source_state(path: str | Path) -> PDFSourceState:
+    """Capture metadata used to reject stale PDF selections before output."""
+    try:
+        state = Path(path).stat()
+    except OSError as exc:
+        raise CompressionError(f"无法读取源 PDF 的文件状态：{exc}") from exc
+    return PDFSourceState(
+        state.st_size,
+        state.st_mtime_ns,
+        state.st_dev,
+        state.st_ino,
+    )
+
+
+def _assert_unchanged_sources(
+    source_states: dict[Path, PDFSourceState],
+) -> None:
+    """Detect ordinary edits/replacements; this is not a file-lock guarantee."""
+    for path, expected in source_states.items():
+        if get_pdf_source_state(path) != expected:
+            raise CompressionError(
+                f"源文件在处理期间发生变化：{path.name}。"
+                "为避免把旧预览应用到新文件，未写入输出；请重新加载后再试。"
+            )
+
+
+@dataclass(frozen=True)
 class CompressionResult:
     input_path: Path
     output_path: Path
@@ -1984,6 +2020,7 @@ def _try_planned_compression(
     cancel_event: threading.Event | None,
     native_session: NativeWorkerSession | None,
     native_stats: dict[str, float | int],
+    source_states: dict[Path, PDFSourceState],
 ) -> CompressionResult | None:
     """Run the one-shot planner when every selected vector is a Figure."""
     if native_session is None or vector_pages or not figure_regions:
@@ -2059,7 +2096,13 @@ def _try_planned_compression(
 
     _check_cancel(cancel_event)
     _notify(progress_callback, 96, "正在写入一次性规划结果…")
-    _atomic_install(selected_result.path, destination)
+    _atomic_install(
+        selected_result.path,
+        destination,
+        source_states=source_states,
+        cancel_event=cancel_event,
+        max_bytes=target_bytes,
+    )
     final_size = destination.stat().st_size
     if final_size > target_bytes:
         raise PlannerUnavailable("Planned result exceeded the target.")
@@ -2330,8 +2373,24 @@ def _compress_candidate(
     return processed_images, processed_vector_pages, processed_figures
 
 
-def _atomic_install(candidate: Path, output_path: Path) -> None:
-    """Install a completed candidate without leaving a partial result."""
+def _atomic_install(
+    candidate: Path,
+    output_path: Path,
+    *,
+    source_states: dict[Path, PDFSourceState] | None = None,
+    cancel_event: threading.Event | None = None,
+    max_bytes: int | None = None,
+) -> None:
+    """Install a completed candidate without leaving a partial result.
+
+    Figure selections refer to object numbers and geometry in a particular
+    source revision. Check for ordinary source edits before replacement.
+    """
+    if source_states:
+        _assert_unchanged_sources(source_states)
+    if max_bytes is not None and candidate.stat().st_size > max_bytes:
+        raise CompressionError("候选文件超过目标大小，未写入最终文件。")
+    _check_cancel(cancel_event)
     os.replace(candidate, output_path)
 
 
@@ -2375,7 +2434,8 @@ def merge_pdfs(
             raise CompressionError("合并结果不能覆盖任何源 PDF。")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    input_bytes = sum(path.stat().st_size for path in sources)
+    source_states = {path: get_pdf_source_state(path) for path in sources}
+    input_bytes = sum(source_states[path].size for path in sources)
     _notify(progress_callback, 1, "正在检查待合并的 PDF…")
     _check_cancel(cancel_event)
 
@@ -2597,7 +2657,10 @@ def merge_pdfs(
             raise CompressionError(f"合并结果校验失败：{exc}") from exc
 
         _check_cancel(cancel_event)
-        _atomic_install(candidate, destination)
+        _atomic_install(
+            candidate, destination, source_states=source_states,
+            cancel_event=cancel_event,
+        )
         result = MergeResult(
             sources,
             destination,
@@ -2628,6 +2691,7 @@ def compress_pdf(
     selected_figure_regions: dict[
         int, list[tuple[float, float, float, float]]
     ] | None = None,
+    expected_source_state: PDFSourceState | None = None,
 ) -> CompressionResult:
     """Compress *input_path* to no more than *target_bytes*.
 
@@ -2647,7 +2711,14 @@ def compress_pdf(
         raise CompressionError("输出文件不能覆盖原 PDF，请选择其他位置。")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    original_bytes = source_path.stat().st_size
+    source_state = get_pdf_source_state(source_path)
+    if expected_source_state is not None and source_state != expected_source_state:
+        raise CompressionError(
+            "源 PDF 在 Figure 预览后已发生变化。"
+            "请重新加载该文件，再选择需要压缩的内容。"
+        )
+    source_states = {source_path: source_state}
+    original_bytes = source_state.size
     _notify(progress_callback, 1, "正在读取 PDF…")
     _check_cancel(cancel_event)
 
@@ -2674,7 +2745,10 @@ def compress_pdf(
             # from a read-only attachment or archive.
             copied.chmod(copied.stat().st_mode | stat.S_IWRITE)
             _check_cancel(cancel_event)
-            _atomic_install(copied, destination)
+            _atomic_install(
+                copied, destination, source_states=source_states,
+                cancel_event=cancel_event, max_bytes=target_bytes,
+            )
             _notify(progress_callback, 100, "文件已经小于目标大小，无需压缩。")
             return CompressionResult(
                 source_path,
@@ -2706,7 +2780,10 @@ def compress_pdf(
             _check_cancel(cancel_event)
             lossless_size = lossless.stat().st_size
             if lossless_size <= target_bytes:
-                _atomic_install(lossless, destination)
+                _atomic_install(
+                    lossless, destination, source_states=source_states,
+                    cancel_event=cancel_event, max_bytes=target_bytes,
+                )
                 _notify(progress_callback, 100, "已通过无损优化达到目标大小。")
                 return CompressionResult(
                     source_path, destination, original_bytes,
@@ -2818,6 +2895,7 @@ def compress_pdf(
                         cancel_event,
                         native_session,
                         native_stats,
+                        source_states,
                     )
                 except PlannerUnavailable:
                     planned_result = None
@@ -3348,7 +3426,10 @@ def compress_pdf(
                 else None
             )
             _notify(progress_callback, 96, "正在写入最终文件…")
-            _atomic_install(best_path, destination)
+            _atomic_install(
+                best_path, destination, source_states=source_states,
+                cancel_event=cancel_event, max_bytes=target_bytes,
+            )
             final_size = destination.stat().st_size
             if final_size > target_bytes:
                 raise CompressionError("最终文件未能满足目标大小，请重试。")
