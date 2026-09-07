@@ -48,7 +48,21 @@ falls back to the tested Python/MuPDF path.
   parent-owned Windows lifetime job, not on the UI thread. It checks basic PDF
   metadata, password protection and input sizes; this is not a full validation
   or sanitization pass. The writer repeats validation and checks the preflight
-  file states before processing. The text/page editor is no longer included.
+  file states before processing. Text editing is no longer included.
+- Visual composition copies selected original pages through a separate,
+  cancellable PyMuPDF writer. Compatible whole-document plans can reuse the
+  guarded native merger; arbitrary page plans do not execute in the Rust guard.
+  The GUI passes preflight file states to the writer, and only the parent can
+  install the final result. Loaded sources cannot be overwritten.
+- Composition is limited to 20,000 output pages and 12 tree levels, with 4 GiB
+  per source and 16 GiB across the sources used in the plan. The material library
+  has no fixed file-count cap, but metadata is inspected in batches and preview
+  requests are bounded. Thumbnail caches are bounded; high-resolution PNGs pass
+  through parent-owned temporary files rather than large child IPC messages.
+- Page and node drag payloads are accepted only from the same workspace session
+  and are checked against its known, inspected sources. They cannot introduce
+  arbitrary unregistered files through the internal page-drag format. PDF files
+  dropped from Explorer remain subject to normal input inspection.
 - Desktop writers and high-resolution previews enter an additional parent-owned
   Windows Job Object before processing starts. Closing that job terminates the
   worker and its inherited descendants. This manages process lifetime; the

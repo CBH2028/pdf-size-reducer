@@ -410,7 +410,7 @@ def test_main_window_prefills_current_pdf_and_passes_checked_states(app, sources
     monkeypatch.setattr(qt_app, "PDFMergeDialog", FakeDialog)
     monkeypatch.setattr(window, "_start_merge", lambda *args: captured.update(start=args))
     try:
-        window.open_merge_dialog(sources[:2] if explicit else None)
+        window.open_quick_merge_dialog(sources[:2] if explicit else None)
         assert captured["initial"] == (sources[:2] if explicit else [sources[4]])
         assert captured["protected"] == [sources[4]]
         assert captured["deleted"]

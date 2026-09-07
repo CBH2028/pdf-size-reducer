@@ -8,13 +8,13 @@
 
 # PDF Size Reducer
 
-**面向日常 PDF 提交限制的最小损失定容压缩工具**
+**可视化 PDF 页面合成与最小损失定容压缩工具**
 
 当作业、申请、报销、投稿或在线表单限制 PDF 大小时，不必重新编辑 Word、PPT 或原始图片：选择文件、输入目标大小，再决定哪些图片需要缩减即可。
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-114%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-178%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -55,8 +55,10 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 
 | 功能 | 说明 |
 | --- | --- |
+| 三栏可视化合成 | 左侧主 PDF 与实时成品预览、中间嵌套合成树、右侧可搜索的多 PDF 素材库。 |
+| 自由选页插入 | 从左右两侧拖入单页、多选页面或整份 PDF，插入指定页前后、跨分支移动、嵌套分组；支持撤销/重做，分组导出为书签。 |
 | 更顺手的合并列表 | 直接拖入 PDF，多选整组移动、文件名自然排序、撤销列表操作；合并前查看每份文件及总页数、体积。 |
-| 合并后压缩 | 通过加固的原生引擎按指定顺序合并最多 100 个 PDF，并将结果载入加速的可视化工作区继续定容压缩。 |
+| 合成后压缩 | 按树形方案复制原始 PDF 页面，不把文字变成图片；生成后可继续定容压缩。符合条件的整份文件方案继续使用原生加速合并。 |
 | 精确定容 | 输入 MB 或 KB，自动寻找不超过目标大小且尽可能清晰的结果，不靠填充无意义字节伪造体积。 |
 | 最小损失 | 首先尝试无损优化；只有达不到目标时才降低所选图片或 Figure 的数据量。 |
 | 完整 Figure 识别 | 根据 `Fig. X`、`Figure X` 或 `图 X` 图注，把位图、矢量线条、箭头和文字组成的论文插图视为一个项目。 |
@@ -100,9 +102,22 @@ py -3 -m venv .venv
 
 如果源 PDF 在扫描后被其他程序保存或替换，请重新加载再进行压缩，避免旧的图形选择对应到新内容。桌面任务先在临时工作区生成结果，主程序确认成功且未取消后才保存到最终位置；取消或后台崩溃时，已有输出不会被半成品替换。
 
-### 合并 PDF 并压缩结果
+### 三栏可视化页面合成
 
-1. 点击“合并多个 PDF”，或一次将多个 PDF 拖入窗口；
+1. 点击“可视化合成 PDF · 自由选页”。工作区已有文件时，它会作为主 PDF；从主窗口拖入多个 PDF 时，第一份作为主 PDF，其余进入素材库。
+2. **左侧**显示主 PDF 的页面缩略图；**右侧**可不断添加或拖入多份素材 PDF，支持文件名搜索。点击某份素材显示它的页面，添加素材不会自动追加到成品。
+3. 用 Ctrl / Shift 多选页面，或输入 `1, 3-5` 等页码后点击“选中页码”。把选中页拖到**中间合成树**，也可选择“之前 / 之后 / 放入分组 / 末尾”后点击插入按钮。拖到行上缘/下缘是前插/后插，拖到分组中央是加入该组。
+4. 右侧 PDF 文件本身也可以整份拖入树，形成独立分支。可新建、改名和嵌套分组，跨组移动页面，多选节点整组排序；撤销/重做可恢复操作。移出树只影响新 PDF 的方案，不删除源文件。
+5. 左侧切换“合成预览（实时）”即可按成品页序检查；点击树中的页面会定位对应成品缩略图。任意页面双击可放大，滚轮缩放、鼠标拖动查看。
+6. 选择新文件名，点击“生成新的 PDF”。树按从上到下、逐层展开的页序生成结果，分组名称保存为书签。可选择只保存，或保存后继续压缩；压缩文件另存。
+
+![三栏可视化 PDF 页面合成](docs/images/pdf-composer.png)
+
+素材库不再受快速合并的 100 份文件数量限制，采用分批检查、分页缩略图和按需加载。为控制资源消耗，单次输出最多 20,000 页、树最多 12 层、单文件不超过 4 GiB、实际使用的源 PDF 合计不超过 16 GiB。指向未采用页面的内部链接会移除；同一源页面重复使用时，内部链接指向首次出现的位置。详见[合成指南（英文）](docs/COMPOSING.md)。
+
+### 整份快速合并（可选）
+
+1. 点击“整份快速合并…”；
 2. 可以继续将 PDF 直接拖入合并列表，查看各文件的页数、体积、所在目录及总计；双击文件可用默认 PDF 阅读器查看；
 3. 拖动调整顺序，或用 Ctrl / Shift 多选后通过“上移 / 下移”（Alt+↑/↓）整组移动。“按文件名排序”会按 `1、2、10` 自然排序。移出、清空只影响列表，不删除原文件；误操作可以“撤销列表操作”；
 4. 修改自动建议的文件名或选择其他保存位置。默认名称会避开已有文件；覆盖确认选“否”时保留当前列表，可改名后继续；
@@ -128,7 +143,7 @@ py -3 -m venv .venv
 - 全局率失真规划器把可用字节分配给所有已选资源，通常只需装配两个完整候选 PDF。
 - 如果目标小到无法维持 180 DPI，程序会报告当前内容可实现的最小大小，而不是继续输出难以辨认的结果。
 
-v3.11.0 起专注于合并与缩减体积，已移除文字编辑、文字自动分区编辑、新增文字和页面删除。不会修改已有 PDF 或删除历史版本。压缩用的 Figure 自动识别、预览与勾选功能仍然保留，不属于文字编辑功能。
+文字编辑、文字自动分区编辑和新增文字仍未恢复。现在的选页、插页、移出页面只用于生成新的合成 PDF，不修改原文件。压缩用的 Figure 自动识别、预览与勾选仍然保留。
 
 ## 开发与测试
 
@@ -136,7 +151,7 @@ v3.11.0 起专注于合并与缩减体积，已移除文字编辑、文字自动
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py merge_ui.py
+.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py merge_ui.py pdf_composer.py composer_ui.py qt_dispatch.py
 # 需要通过 rustup 安装 stable Rust，并安装 Visual Studio 2022 C++ Build Tools。
 native_worker\build.bat
 ```

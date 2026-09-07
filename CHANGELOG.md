@@ -2,6 +2,25 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.12.0 - 2026-09-07
+
+### Three-column visual page composition
+
+- Add a main-PDF/live-output preview pane on the left, a nested composition tree in the middle, and a searchable multi-PDF material library on the right. Material files can be added repeatedly without the quick merger's 100-file library cap.
+- Select individual pages, Ctrl/Shift selections or typed page ranges. Drag pages from either side into the tree, insert before/after a page or inside a group, and drag whole material documents into branches.
+- Support nested groups, group names, cross-branch moves, multi-node ordering, undo/redo, and omission from the new-document plan without deleting source files. Save non-empty groups as PDF bookmarks and show final page numbers alongside original-page provenance.
+- Show paginated thumbnails and a live output-order preview; double-click pages for a zoomable original-page preview. Inspect material metadata in batches and keep thumbnail rendering and caches bounded.
+- Preserve the quick whole-document queue as an optional entry point. The text editor remains removed; page assembly always produces a separate new PDF, optionally followed by compression.
+
+### Preservation, isolation and verification
+
+- Copy original PDF page content without rasterizing text. Preserve dimensions, rotation, ordinary annotations and supported editable form fields. Remap internal links to included pages, omit links to excluded pages, and target the first output occurrence when a source page is repeated.
+- Use the matched Rust/C++ merger for compatible whole-document plans. Arbitrary page plans use an isolated form-aware PyMuPDF writer; the existing compression accelerator and protocol remain unchanged.
+- Check source state before processing and final installation. Protect all loaded sources against overwrite; retain the tree when overwrite is declined. Cancel and clean up isolated inspection, rendering and writing jobs on closure.
+- Route asynchronous GUI updates through explicit QObject receivers on the GUI thread, including quick-merge inspection. This fixes a callback-thread issue that could prevent thumbnail timers from starting.
+- Limit each composition to 20,000 output pages, 12 levels, 4 GiB per source and 16 GiB across sources actually used. Document the library/preview bounds and link/bookmark/signature limitations.
+- All 178 Python tests passed, including 64 new composition/model/UI cases, a 105-file material library and export from 101 sources. Add `--composer-self-test` for the real three-pane UI, background thumbnails, zoom preview, nested-tree export and bookmark/page order. Packaged checks also cover the existing native-worker, quick-merge UI and compression workflow tests.
+
 ## 3.11.0 - 2026-09-07
 
 ### Focused merge and compression workflow

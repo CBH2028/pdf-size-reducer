@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from compressor import CompressionError, PDFSourceState, format_bytes, get_pdf_source_state
+from qt_dispatch import GuiJobReceiver
 
 
 @dataclass(frozen=True)
@@ -395,12 +396,17 @@ class MergeDialog(QDialog):
         self.worker = self.worker_factory(list(self._batch))
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
-        self.worker.item_ready.connect(lambda info, g=generation: self._info_ready(g, info))
-        self.worker.failed.connect(lambda message, g=generation: self._inspection_failed(g, message))
+        self.receiver = GuiJobReceiver(
+            self, lambda info: self._info_ready(generation, info),
+            lambda message: self._inspection_failed(generation, message),
+            self._inspection_finished,
+        )
+        self.worker.item_ready.connect(self.receiver.item, Qt.ConnectionType.QueuedConnection)
+        self.worker.failed.connect(self.receiver.error, Qt.ConnectionType.QueuedConnection)
         for signal in (self.worker.completed, self.worker.failed, self.worker.cancelled):
             signal.connect(self.thread.quit)
             signal.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self._inspection_finished)
+        self.thread.finished.connect(self.receiver.finished, Qt.ConnectionType.QueuedConnection)
         self.thread.finished.connect(self.thread.deleteLater)
         self._update_controls()
         self.thread.start()

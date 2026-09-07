@@ -94,10 +94,12 @@ from compressor import (
 from native_worker import find_native_worker
 from process_jobs import WorkerJob, gated_worker
 from merge_ui import MergeDialog, inspect_merge_input
+from pdf_composer import compose_pdf, render_page_png
+from composer_ui import ComposerDialog
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.11.0"
+APP_VERSION = "3.12.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -1691,7 +1693,8 @@ def _run_pdf_process(
                 terminal = ("failed", str(payload[0]))
                 break
             elif kind == "item" and hasattr(worker, "item_ready"):
-                worker.item_ready.emit(payload[0])
+                item = worker.decode_item(payload[0]) if hasattr(worker, "decode_item") else payload[0]
+                worker.item_ready.emit(item)
     except Exception as exc:
         terminal = ("failed", f"后台处理失败：{exc}")
     finally:
@@ -1953,6 +1956,92 @@ class MergeInspectionWorker(QObject):
     @Slot()
     def run(self):
         _run_pdf_process(self, _merge_inspection_process, (self.paths,), "PDFMergeInspection", cancel_after=1.0)
+
+
+def _page_render_process(requests, max_side, directory, result_queue, cancel_event):
+    for number, (ref, state) in enumerate(requests):
+        if cancel_event.is_set():
+            result_queue.put(("cancelled",))
+            return
+        try:
+            data = render_page_png(ref, state, max_side)
+            output = Path(directory) / f"{number}.png"
+            output.write_bytes(data)
+            item = (ref, state, output, "")
+        except Exception as exc:
+            item = (ref, state, None, str(exc))
+        result_queue.put(("item", item))
+    result_queue.put(("completed", None))
+
+
+class PageRenderWorker(QObject):
+    progress = Signal(int, str)
+    item_ready = Signal(object)
+    completed = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, requests, max_side):
+        super().__init__()
+        self.requests, self.max_side = requests, max_side
+        self.directory = None
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def decode_item(self, item):
+        ref, state, filename, error = item
+        if error:
+            return ref, state, b"", error
+        path = Path(filename).resolve()
+        if path.parent != self.directory or path.stat().st_size > 16 * 1024**2:
+            raise CompressionError("页面预览结果无效。")
+        data = path.read_bytes()
+        path.unlink()
+        return ref, state, data, ""
+
+    @Slot()
+    def run(self):
+        try:
+            with tempfile.TemporaryDirectory(prefix="pdf-composer-render-") as directory:
+                self.directory = Path(directory).resolve()
+                _run_pdf_process(self, _page_render_process,
+                                 (self.requests, self.max_side, self.directory),
+                                 "PDFPagePreview", cancel_after=1.0)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+def _compose_process(sources, destination, pages, bookmarks, states, result_queue, cancel_event):
+    try:
+        result = compose_pdf(pages, destination, expected_source_states=states,
+                             bookmarks=bookmarks, cancel_event=cancel_event,
+                             progress_callback=lambda value, message: result_queue.put(("progress", value, message)))
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        result_queue.put(("completed", result))
+
+
+class PageCompositionWorker(MergeWorker):
+    def __init__(self, sources, destination, states, pages, bookmarks):
+        super().__init__(sources, destination, states)
+        self.pages, self.bookmarks = pages, bookmarks
+
+    @Slot()
+    def run(self):
+        _run_staged_pdf_process(self, _compose_process,
+                               (self.sources, self.destination, self.pages, self.bookmarks, self.expected_source_states),
+                               "PDFPageComposer")
+
+
+class PDFComposerDialog(ComposerDialog):
+    def __init__(self, parent, initial_paths=None, protected_paths=()):
+        super().__init__(parent, initial_paths, protected_paths, MergeInspectionWorker, PageRenderWorker)
+        self.setWindowIcon(make_app_icon())
 
 
 class SmoothGraphicsView(QGraphicsView):
@@ -2330,11 +2419,15 @@ class MainWindow(QMainWindow):
         self.input_info.setObjectName("fieldValue")
         self.input_info.setWordWrap(True)
         file_layout.addWidget(self.input_info)
-        self.merge_button = QPushButton("＋ 合并多个 PDF")
+        self.merge_button = QPushButton("可视化合成 PDF · 自由选页")
         self.merge_button.setProperty("quiet", True)
         self.merge_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.merge_button.clicked.connect(lambda: self.open_merge_dialog())
         file_layout.addWidget(self.merge_button)
+        self.quick_merge_button = QPushButton("整份快速合并…")
+        self.quick_merge_button.setProperty("quiet", True)
+        self.quick_merge_button.clicked.connect(lambda: self.open_quick_merge_dialog())
+        file_layout.addWidget(self.quick_merge_button)
         sidebar_layout.addWidget(file_card)
 
         target_card = self._card()
@@ -2614,6 +2707,23 @@ class MainWindow(QMainWindow):
             self._load_input(Path(selected))
 
     def open_merge_dialog(self, initial_paths: list[Path] | None = None) -> None:
+        if (self.assets_loading or self.processing_busy or self._closing
+                or (self.merge_thread and self.merge_thread.isRunning())
+                or (self.compression_thread and self.compression_thread.isRunning())):
+            Toast(self, "当前任务完成后即可合成 PDF。")
+            return
+        initial_paths = ([self.input_path] if self.input_path else []) if initial_paths is None else initial_paths
+        dialog = PDFComposerDialog(self, initial_paths, [self.input_path] if self.input_path else [])
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            dialog.deleteLater()
+            return
+        sources, destination, states = dialog.source_paths(), dialog.output_path().resolve(), dialog.source_states()
+        pages, bookmarks = dialog.plan.pages(), dialog.plan.bookmarks()
+        self.merge_load_after = dialog.load_after_merge()
+        dialog.deleteLater()
+        self._start_merge(sources, destination, states, pages, bookmarks)
+
+    def open_quick_merge_dialog(self, initial_paths: list[Path] | None = None) -> None:
         compression_running = bool(
             self.compression_thread and self.compression_thread.isRunning()
         )
@@ -2638,7 +2748,7 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
         self._start_merge(sources, destination, source_states)
 
-    def _start_merge(self, sources: list[Path], destination: Path, expected_source_states=None) -> None:
+    def _start_merge(self, sources: list[Path], destination: Path, expected_source_states=None, pages=None, bookmarks=None) -> None:
         self.progress_bar.setValue(0)
         self.status_label.setText("正在准备合并…")
         self.status_indicator.set_state("working")
@@ -2647,7 +2757,8 @@ class MainWindow(QMainWindow):
         self._set_busy(True)
 
         self.merge_thread = QThread(self)
-        self.merge_worker = MergeWorker(sources, destination, expected_source_states)
+        self.merge_worker = (MergeWorker(sources, destination, expected_source_states) if pages is None else
+                             PageCompositionWorker(sources, destination, expected_source_states, pages, bookmarks))
         self.merge_worker.moveToThread(self.merge_thread)
         self.merge_thread.started.connect(self.merge_worker.run)
         self.merge_worker.progress.connect(self._merge_progress)
@@ -2737,6 +2848,7 @@ class MainWindow(QMainWindow):
         self.selected_asset_keys.clear()
         self.file_button.setEnabled(False)
         self.merge_button.setEnabled(False)
+        self.quick_merge_button.setEnabled(False)
         self.file_button.setText("读取中…")
         self.start_button.setEnabled(False)
         self.selection_info.setText("正在识别完整 Figure，请稍候…")
@@ -2845,6 +2957,7 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
+        self.quick_merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
         self.input_source_state = None
@@ -2864,6 +2977,7 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
+        self.quick_merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
         self.input_source_state = None
@@ -2955,6 +3069,7 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
+        self.quick_merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.start_button.setEnabled(True)
         self._update_selection_info()
@@ -3279,6 +3394,7 @@ class MainWindow(QMainWindow):
         self.processing_busy = busy
         self.file_button.setEnabled(not busy)
         self.merge_button.setEnabled(not busy)
+        self.quick_merge_button.setEnabled(not busy)
         self.output_button.setEnabled(not busy)
         self.target_edit.setEnabled(not busy)
         self.unit_combo.setEnabled(not busy)
@@ -3428,6 +3544,9 @@ def main() -> None:
     if "--merge-ui-self-test" in sys.argv:
         from merge_ui import smoke_test
         raise SystemExit(smoke_test(PDFMergeDialog, MergeWorker, APP_STYLE))
+    if "--composer-self-test" in sys.argv:
+        from composer_ui import smoke_test
+        raise SystemExit(smoke_test(PDFComposerDialog, PageCompositionWorker, APP_STYLE))
     if sys.platform.startswith("win"):
         try:
             from ctypes import windll
