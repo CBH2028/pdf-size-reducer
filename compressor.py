@@ -2399,6 +2399,7 @@ def merge_pdfs(
     output_path: str | Path,
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
+    expected_source_states: dict[Path, PDFSourceState] | None = None,
 ) -> MergeResult:
     """Merge PDFs in order and atomically install a validated result.
 
@@ -2433,8 +2434,15 @@ def merge_pdfs(
         if source_path == destination:
             raise CompressionError("合并结果不能覆盖任何源 PDF。")
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
     source_states = {path: get_pdf_source_state(path) for path in sources}
+    if expected_source_states is not None:
+        expected = {
+            Path(path).expanduser().resolve(): state
+            for path, state in expected_source_states.items()
+        }
+        if expected != source_states:
+            raise CompressionError("源 PDF 在合并预检后发生变化，请重新检查文件。")
+    destination.parent.mkdir(parents=True, exist_ok=True)
     input_bytes = sum(source_states[path].size for path in sources)
     _notify(progress_callback, 1, "正在检查待合并的 PDF…")
     _check_cancel(cancel_event)

@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-135%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-114%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -62,10 +62,8 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 
 | Feature | What it does |
 | --- | --- |
-| Region-based text editing | Detect text paragraphs, split separated columns, identify image areas, and edit a selected region or draw a new text box. |
-| Matched text styling | Reuse an embedded font when it covers the new characters; inherit size, color, line spacing and alignment from nearby text, with visible fallback warnings. |
-| Page deletion | Remove the current page or original page ranges such as `2, 4-6`; restore, undo and redo before saving. At least one page must remain. |
-| Merge and compress | Combine up to 100 PDFs through the guarded native engine, then load the result into the accelerated visual compression workspace. |
+| Friendly merge queue | Drop PDFs directly into the list, move multiple selected files together, sort filenames naturally, undo list changes, and check page/size totals before saving. |
+| Merge and compress | Combine up to 100 PDFs through the guarded native engine. Choose merge-only or continue to the accelerated visual compression workspace. |
 | Exact size target | Enter MB or KB. The app searches for the clearest result at or below the target instead of padding a file with meaningless bytes. |
 | Loss-minimizing workflow | Lossless structural optimization is tried first. Image or Figure data is reduced only when lossless work cannot reach the target. |
 | Complete Figure discovery | Captions such as `Fig. X`, `Figure X`, and `图 X` are used to group bitmaps, vector paths, arrows, and labels into one selectable item. |
@@ -116,11 +114,16 @@ after successful completion and a final cancellation check.
 ### Merge PDFs, then compress the result
 
 1. Click **Merge multiple PDFs** (`合并多个 PDF`), or drag multiple PDFs into the window.
-2. Add files and arrange their order by dragging, or with the **Move up / Move down** buttons. Remove any files you do not need.
-3. Choose where to save the merged PDF. Leave **Load into compression workspace after merging** checked, then click **Start merge**.
-4. After the merged document loads, review its Figures, set a target size in MB or KB, and click **Start smart compression**. The compressed result is saved separately from the merged PDF.
+2. Drop more PDFs directly into the merge list. Check each file's page count, size and folder, along with the totals. Double-click an entry to inspect it in your default PDF reader.
+3. Drag to reorder, or use **Ctrl / Shift** to select several entries and move them together with **Move up / Move down** or **Alt+Up / Alt+Down**. **Sort by filename** puts `1, 2, 10` in natural order. Remove/clear only affects the list; **Undo list action** restores your previous queue.
+4. Edit the suggested output name or choose a different folder. The default name avoids existing files. If you decline an overwrite, the queue stays open so you can choose another name.
+5. Choose **Continue to compression** (`继续压缩：先预览，再设置目标大小`), then click **Merge and continue**. After the merged document loads, review its Figures, set an MB/KB target, and start compression. The compressed result is saved separately from the merged PDF.
 
-Uncheck the workspace option if you only need the merged file. With a matching protocol-3 worker, merging runs through the Rust guard and C++17/MuPDF backend; an unavailable or incompatible worker falls back automatically to Python/PyMuPDF. Both paths run in a separate process and support cancellation. The output is installed only after the completed PDF passes page-count and page-loading checks. Page text, geometry, ordinary page links, annotations, and bookmark destinations are retained. Password-protected inputs must be decrypted first.
+Choose **Merge only** (`只合并，保存 PDF`) if you do not need compression. Opening the merge dialog from an already-loaded PDF adds that file to the queue; an explicit multi-file drop uses only the dropped files. Duplicates and invalid paths are reported. Background checks flag unreadable/password-protected inputs; use **Recheck files** if a source changes. Inputs are limited to 100 PDFs, 4 GiB per file and 16 GiB in total.
+
+![Merge queue with natural sorting and page totals](docs/images/pdf-merge.png)
+
+With a matching protocol-3 worker, merging runs through the Rust guard and C++17/MuPDF backend; an unavailable or incompatible worker falls back automatically to Python/PyMuPDF. Both paths run in a separate process and support cancellation. The output is installed only after the completed PDF passes page-count and page-loading checks. Page text, geometry, ordinary page links, annotations, and bookmark destinations are retained. Password-protected inputs must be decrypted first.
 
 Inputs with editable AcroForm fields automatically use the form-aware compatibility merger to preserve field values and editability. Native merges also retain ordinary links on rotated pages, including overlapping links with different targets.
 
@@ -136,17 +139,7 @@ Merging is a page-combination operation: document-level attachments, PDF portfol
 - A global rate-distortion planner allocates the available bytes across all selected assets, then normally assembles only two complete candidate PDFs.
 - If the target would require going below the 180 DPI clarity floor, the app reports the smallest safe result instead of silently producing unreadable content.
 
-## Edit text and delete pages (v3.10.0)
-
-Open **Edit PDF / 编辑 PDF · 自动分区** in the file card. Click a detected text region to replace its contents, or choose **框选新增文字** and draw a box to add text. The editor matches nearby text, favoring the same column; the reference region can be changed manually. Click **应用到草稿并预览** to see the actual PDF rendering. Font size is never silently reduced to fit: enlarge the box, shorten the text or adjust the size explicitly if needed.
-
-Use **删除本页** to mark the current page for removal; the same button restores it. **页面管理…** accepts original page numbers and ranges. Original numbering stays visible throughout editing, so successive deletions do not shift the page you are selecting. Undo and redo cover both text changes and page deletion.
-
-**另存为 PDF** writes a new file. **保存并继续压缩** saves it and loads the result into the existing compression workspace. Original files are not overwritten, and cancellation or stale source-file detection prevents partial output installation.
-
-![Region-based PDF editor](docs/images/pdf-editor.png)
-
-This is a horizontal-text editor and geometric layout detector, not OCR, a structured table editor or a Word-style document reflow engine. Scanned image text cannot be directly replaced. Mixed-style regions use their dominant style; unavailable or incomplete fonts require an explicitly reported fallback. Signature-bearing documents and unsafe overlapping/rotated text regions are protected from editing. Always review the preview. See the [editing guide and limitations](docs/EDITING.md).
+The current app focuses on merging and size reduction. Text editing, automatic text-region editing, text insertion and page deletion have been removed in v3.11.0. Existing PDFs and historical releases are not changed. Figure discovery and selection remain available for compression; they are not text-editing tools.
 
 ## Development and testing
 
@@ -154,7 +147,7 @@ This is a horizontal-text editor and geometric layout detector, not OCR, a struc
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
+.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py merge_ui.py
 # Requires stable Rust (rustup) and Visual Studio 2022 C++ Build Tools.
 native_worker\build.bat
 ```
@@ -197,12 +190,15 @@ Use `PDF_Size_Reducer.exe --workflow-self-test` for a headless packaged smoke
 test of guarded merging, lossless compression, preview, native Figure planning,
 and cancellation before final output installation (exit code 0 means success).
 This complements `--native-worker-self-test`, which only checks worker discovery.
+Use `--merge-ui-self-test` to check the actual merge queue, background page inspection,
+multi-selection ordering, undo, and preflight-checked guarded output in a packaged build.
 
 ## Project structure
 
 ```text
 pdf-size-reducer/
 ├── qt_app.py              # Qt 6 desktop UI and background jobs
+├── merge_ui.py            # Merge queue, metadata preflight, ordering and save choices
 ├── compressor.py          # Figure discovery, rendering, and targeting engine
 ├── native_worker.py       # Versioned bridge, cancellation, and safe fallback
 ├── process_jobs.py        # Lifetime management for desktop process trees

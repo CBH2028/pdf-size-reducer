@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-135%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-114%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -55,6 +55,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 
 | 功能 | 说明 |
 | --- | --- |
+| 更顺手的合并列表 | 直接拖入 PDF，多选整组移动、文件名自然排序、撤销列表操作；合并前查看每份文件及总页数、体积。 |
 | 合并后压缩 | 通过加固的原生引擎按指定顺序合并最多 100 个 PDF，并将结果载入加速的可视化工作区继续定容压缩。 |
 | 精确定容 | 输入 MB 或 KB，自动寻找不超过目标大小且尽可能清晰的结果，不靠填充无意义字节伪造体积。 |
 | 最小损失 | 首先尝试无损优化；只有达不到目标时才降低所选图片或 Figure 的数据量。 |
@@ -102,11 +103,16 @@ py -3 -m venv .venv
 ### 合并 PDF 并压缩结果
 
 1. 点击“合并多个 PDF”，或一次将多个 PDF 拖入窗口；
-2. 添加文件，通过拖动或“上移 / 下移”调整合并顺序，移除不需要的文件；
-3. 选择合并文件的保存位置，保留“合并完成后载入压缩工作区”勾选，点击“开始合并”；
-4. 合并文件读取完成后，预览并勾选 Figure，设置 MB 或 KB 目标，点击“开始智能压缩”。压缩结果另存，合并文件也会保留。
+2. 可以继续将 PDF 直接拖入合并列表，查看各文件的页数、体积、所在目录及总计；双击文件可用默认 PDF 阅读器查看；
+3. 拖动调整顺序，或用 Ctrl / Shift 多选后通过“上移 / 下移”（Alt+↑/↓）整组移动。“按文件名排序”会按 `1、2、10` 自然排序。移出、清空只影响列表，不删除原文件；误操作可以“撤销列表操作”；
+4. 修改自动建议的文件名或选择其他保存位置。默认名称会避开已有文件；覆盖确认选“否”时保留当前列表，可改名后继续；
+5. 选择“继续压缩：先预览，再设置目标大小”，点击“合并并继续压缩”。合并文件读取完成后，预览并勾选 Figure，设置 MB 或 KB 目标，再开始压缩。压缩结果另存，合并文件也会保留。
 
-如果只需合并，取消“载入压缩工作区”勾选即可。匹配协议 3 worker 时，合并由 Rust 守卫和 C++17/MuPDF 后端完成；worker 缺失或不兼容时自动回退到 Python/PyMuPDF。两条路径都在独立进程中执行并支持取消，完整结果经过页数和页面读取校验后才写入最终位置。页面文字、尺寸、旋转、普通页面链接、批注和书签目标会保留；受密码保护的文件需要先解密。
+如果只需合并，选择“只合并，保存 PDF”。工作区已有 PDF 时点击合并会自动带入；明确拖入多个文件时则只使用这批文件。重复文件和无效路径会提示跳过；后台检查会标出不可读取或受密码保护的文件。源文件有变化时，点击“重新检查文件”后再确认。一次最多 100 个 PDF、单文件不超过 4 GiB、总输入不超过 16 GiB。
+
+![合并列表、自然排序与页数统计](docs/images/pdf-merge.png)
+
+匹配协议 3 worker 时，合并由 Rust 守卫和 C++17/MuPDF 后端完成；worker 缺失或不兼容时自动回退到 Python/PyMuPDF。两条路径都在独立进程中执行并支持取消，完整结果经过页数和页面读取校验后才写入最终位置。页面文字、尺寸、旋转、普通页面链接、批注和书签目标会保留；受密码保护的文件需要先解密。
 
 包含可编辑 AcroForm 表单的文件会自动使用兼容合并路径，保留字段值及可编辑性。原生合并也会正确保留旋转页面上的普通链接，以及位置重叠但目标不同的链接。
 
@@ -122,19 +128,7 @@ py -3 -m venv .venv
 - 全局率失真规划器把可用字节分配给所有已选资源，通常只需装配两个完整候选 PDF。
 - 如果目标小到无法维持 180 DPI，程序会报告当前内容可实现的最小大小，而不是继续输出难以辨认的结果。
 
-## 编辑文字与删除页面（v3.10.0）
-
-点击文件卡片中的 **“编辑 PDF · 自动分区”**，可直接选择文件进入编辑器，无需先执行压缩：
-
-1. 自动识别文字段落、分栏文字与图片区域。点击蓝色文字区可替换内容；点击“框选新增文字”后，在页面拖出新增区域。
-2. 新增文字优先匹配同栏附近文字的字体、字号、颜色、行距和对齐方式，也可手动选择参考区。可用且包含所需字形的嵌入字体会优先复用；缺字或无法复用时明确提示替代字体。
-3. 点击底部的 **“应用到草稿并预览”** 查看实际排版。文字过长时提示扩大区域、精简内容或手动调字号，不会悄悄缩字、截断文本或覆盖邻段。
-4. **“删除本页”** 可标记删除当前页，再次点击可恢复；**“页面管理…”** 支持 `2, 4-6` 等原始页码，清空列表可恢复所有页。删页和文字修改均可撤销/重做，禁止删光全部页面。
-5. **“另存为 PDF”** 保存副本；**“保存并继续压缩”** 将编辑结果载入原有压缩工作区。原 PDF 始终保留，取消和源文件中途变化不会安装不完整结果。
-
-![PDF 自动分区与文字编辑](docs/images/pdf-editor.png)
-
-此版主要支持水平中英文文字，不是 OCR、表格结构编辑或 Word 式全文重排。扫描图内原字不能直接替换；混合样式整区替换采用主要样式，需核对预览。签名文档、旋转/竖排文字、不可见文字和不安全的重叠区域会受保护。页面删除后，指向被删页的链接会移除，对应书签会停用。详细说明见[编辑指南](docs/EDITING.md)。
+v3.11.0 起专注于合并与缩减体积，已移除文字编辑、文字自动分区编辑、新增文字和页面删除。不会修改已有 PDF 或删除历史版本。压缩用的 Figure 自动识别、预览与勾选功能仍然保留，不属于文字编辑功能。
 
 ## 开发与测试
 
@@ -142,7 +136,7 @@ py -3 -m venv .venv
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py
+.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py merge_ui.py
 # 需要通过 rustup 安装 stable Rust，并安装 Visual Studio 2022 C++ Build Tools。
 native_worker\build.bat
 ```

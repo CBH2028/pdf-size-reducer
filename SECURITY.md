@@ -44,15 +44,11 @@ falls back to the tested Python/MuPDF path.
 
 ## Scope and limitations
 
-- The v3.10 text/page editor analyzes, previews and writes through separate
-  PyMuPDF processes inside the parent-owned Windows lifetime job. It does not
-  route arbitrary editing operations through the Rust/C++ guard. Original files
-  cannot be overwritten; only a validated, uncancelled result is installed by
-  the parent. Signature-field documents, pre-existing redaction annotations on
-  edited pages and unsafe text/form overlaps are rejected. Deleting all pages
-  is also rejected. This is not OCR or a forensic sanitization tool: it does not
-  scrub document metadata, attachments or accessibility structure. Review the
-  [editing limits](docs/EDITING.md) before handling sensitive documents.
+- Merge-list page inspection runs through a cancellable PyMuPDF process in the
+  parent-owned Windows lifetime job, not on the UI thread. It checks basic PDF
+  metadata, password protection and input sizes; this is not a full validation
+  or sanitization pass. The writer repeats validation and checks the preflight
+  file states before processing. The text/page editor is no longer included.
 - Desktop writers and high-resolution previews enter an additional parent-owned
   Windows Job Object before processing starts. Closing that job terminates the
   worker and its inherited descendants. This manages process lifetime; the

@@ -2,6 +2,24 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.11.0 - 2026-09-07
+
+### Focused merge and compression workflow
+
+- Remove the PDF text editor, automatic text-region editing, text insertion, font-matching controls and page deletion, together with their implementation and current guides. Keep Figure discovery, visual selection, preview and accelerated size reduction. Existing documents and historical releases are unaffected.
+- Rebuild the merge queue with direct file drops, numbered entries, per-file page/size/folder information, total pages and bytes, and explicit duplicate/invalid/over-limit feedback. Double-click a source to open it in the default PDF reader.
+- Move multiple selected entries as a group while preserving their relative order. Support Alt+Up/Down, Delete to remove from the queue, natural filename sorting, and undo for additions, removals, clearing and reordering. Queue removal never deletes source files.
+- Suggest a non-conflicting output filename, allow direct filename/path editing, and retain the user's custom name when the list changes. Declining overwrite confirmation keeps the dialog and queue open.
+- Make merge-only and merge-then-compress explicit choices. Preload the current workspace PDF when opening the merge dialog, without adding it to an explicit multi-file drop. Protect both source PDFs and the active workspace file against output overwrite.
+
+### Reliability and verification
+
+- Read basic merge metadata in a cancellable process under the desktop lifetime job. Show errors before starting, allow rechecking changed files, and retain the existing 100-file / 4 GiB-per-file / 16 GiB-total limits.
+- Carry preflight source states into the isolated writer; reject sources that changed between inspection, confirmation and processing. Existing atomic installation and final cancellation/source checks remain in place.
+- All 114 Python regression tests passed: 80 existing merge/compression/lifecycle tests and 34 new queue/preflight tests. Obsolete editor-only tests were removed with the editor.
+- Add `--merge-ui-self-test` for source and packaged builds, covering actual background inspection, multi-selection ordering, undo and guarded merge output. Windows executable checks cover native discovery, merge UI and the existing merge/compression/preview/planner/cancellation workflow.
+- The matched protocol-3 Rust/C++ accelerator is unchanged. This is a workflow simplification, not an additional compression-speed claim.
+
 ## 3.10.0 - 2026-09-07
 
 ### PDF text editing and page management
