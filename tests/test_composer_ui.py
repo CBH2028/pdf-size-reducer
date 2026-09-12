@@ -51,6 +51,7 @@ def factory(app):
 
     def create(paths=(), inspect=True):
         dialog = qt_app.PDFComposerDialog(None, paths)
+        dialog.set_advanced(True)
         dialogs.append(dialog)
         if inspect:
             for path in paths:

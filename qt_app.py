@@ -99,7 +99,7 @@ from composer_ui import ComposerDialog
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.12.0"
+APP_VERSION = "3.13.1"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -2040,7 +2040,7 @@ class PageCompositionWorker(MergeWorker):
 
 class PDFComposerDialog(ComposerDialog):
     def __init__(self, parent, initial_paths=None, protected_paths=()):
-        super().__init__(parent, initial_paths, protected_paths, MergeInspectionWorker, PageRenderWorker)
+        super().__init__(parent, initial_paths, protected_paths, MergeInspectionWorker, PageRenderWorker, PDFMergeDialog)
         self.setWindowIcon(make_app_icon())
 
 
@@ -2419,15 +2419,11 @@ class MainWindow(QMainWindow):
         self.input_info.setObjectName("fieldValue")
         self.input_info.setWordWrap(True)
         file_layout.addWidget(self.input_info)
-        self.merge_button = QPushButton("可视化合成 PDF · 自由选页")
+        self.merge_button = QPushButton("组合 PDF · 拖动页面即可")
         self.merge_button.setProperty("quiet", True)
         self.merge_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.merge_button.clicked.connect(lambda: self.open_merge_dialog())
         file_layout.addWidget(self.merge_button)
-        self.quick_merge_button = QPushButton("整份快速合并…")
-        self.quick_merge_button.setProperty("quiet", True)
-        self.quick_merge_button.clicked.connect(lambda: self.open_quick_merge_dialog())
-        file_layout.addWidget(self.quick_merge_button)
         sidebar_layout.addWidget(file_card)
 
         target_card = self._card()
@@ -2717,6 +2713,11 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return
+        if dialog.quick_merge_request is not None:
+            sources, destination, states, self.merge_load_after = dialog.quick_merge_request
+            dialog.deleteLater()
+            self._start_merge(sources, destination.resolve(), states)
+            return
         sources, destination, states = dialog.source_paths(), dialog.output_path().resolve(), dialog.source_states()
         pages, bookmarks = dialog.plan.pages(), dialog.plan.bookmarks()
         self.merge_load_after = dialog.load_after_merge()
@@ -2848,7 +2849,6 @@ class MainWindow(QMainWindow):
         self.selected_asset_keys.clear()
         self.file_button.setEnabled(False)
         self.merge_button.setEnabled(False)
-        self.quick_merge_button.setEnabled(False)
         self.file_button.setText("读取中…")
         self.start_button.setEnabled(False)
         self.selection_info.setText("正在识别完整 Figure，请稍候…")
@@ -2957,7 +2957,6 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
-        self.quick_merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
         self.input_source_state = None
@@ -2977,7 +2976,6 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
-        self.quick_merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.assets = []
         self.input_source_state = None
@@ -3069,7 +3067,6 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
-        self.quick_merge_button.setEnabled(True)
         self.file_button.setText("浏览…")
         self.start_button.setEnabled(True)
         self._update_selection_info()
@@ -3394,7 +3391,6 @@ class MainWindow(QMainWindow):
         self.processing_busy = busy
         self.file_button.setEnabled(not busy)
         self.merge_button.setEnabled(not busy)
-        self.quick_merge_button.setEnabled(not busy)
         self.output_button.setEnabled(not busy)
         self.target_edit.setEnabled(not busy)
         self.unit_combo.setEnabled(not busy)
@@ -3547,6 +3543,9 @@ def main() -> None:
     if "--composer-self-test" in sys.argv:
         from composer_ui import smoke_test
         raise SystemExit(smoke_test(PDFComposerDialog, PageCompositionWorker, APP_STYLE))
+    if "--simple-composer-self-test" in sys.argv:
+        from composer_ui import smoke_test
+        raise SystemExit(smoke_test(PDFComposerDialog, PageCompositionWorker, APP_STYLE, simple=True))
     if sys.platform.startswith("win"):
         try:
             from ctypes import windll

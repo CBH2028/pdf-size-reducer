@@ -12,13 +12,14 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QGraphicsScene,
     QGraphicsView, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QSplitter, QSpinBox,
-    QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QStackedWidget, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from compressor import CompressionError, format_bytes, get_pdf_source_state
 from merge_ui import MergeInputInfo, suggest_merge_output
 from pdf_composer import CompositionPlan, MAX_OUTPUT_PAGES, PageRef, parse_pages, walk
 from qt_dispatch import GuiJobReceiver
+from simple_composer_ui import SimpleCompositionView
 
 PAGE_MIME = "application/x-pdf-size-reducer-composition"
 ROLE = Qt.ItemDataRole.UserRole
@@ -354,11 +355,12 @@ class PageCanvas(QGraphicsView):
 
 
 class ComposerDialog(QDialog):
-    def __init__(self, parent, initial_paths, protected_paths, inspect_factory, render_factory):
+    def __init__(self, parent, initial_paths, protected_paths, inspect_factory, render_factory, quick_merge_factory=None):
         super().__init__(parent)
         self.session = uuid4().hex
         self.plan = CompositionPlan()
         self.inspect_factory, self.render_factory = inspect_factory, render_factory
+        self.quick_merge_factory, self.quick_merge_request = quick_merge_factory, None
         self.protected = {Path(path).resolve() for path in protected_paths}
         self.paths, self.infos, self.material_items = [], {}, {}
         self.main_source, self.auto_main = None, None
@@ -370,12 +372,24 @@ class ComposerDialog(QDialog):
         self.preview_dialog = self.preview_canvas = None
         self.preview_pending = None
         self.preview_generation = 0
-        self.setWindowTitle("可视化 PDF 合成 · 主 PDF / 合成树 / 素材库")
-        self.resize(1390, 880)
-        self.setMinimumSize(1100, 700)
+        self.setWindowTitle("组合 PDF · 拖动页面即可")
+        self.resize(1220, 820)
+        self.setMinimumSize(900, 620)
         self.setAcceptDrops(True)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        modes = QHBoxLayout()
+        title = QLabel("组合 PDF")
+        title.setProperty("title", True)
+        modes.addWidget(title, 1)
+        self.quick_button = button("整份合并…", self.open_quick_merge, modes)
+        self.mode_button = button("高级组合", lambda: self.set_advanced(not self.is_advanced()), modes)
+        outer.addLayout(modes)
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack, 1)
+        self.advanced_page = QWidget()
+        root = QVBoxLayout(self.advanced_page)
+        root.setContentsMargins(0, 0, 0, 0)
         heading = QLabel("把需要的页面，放到想要的位置")
         heading.setProperty("title", True)
         root.addWidget(heading)
@@ -487,6 +501,10 @@ class ComposerDialog(QDialog):
             QPushButton#composeSaveButton { background: #635BFF; color: white; padding: 10px 24px; border: none; }
             QPushButton#composeSaveButton:disabled { background: #CBC9E2; }
         """)
+        self.simple = SimpleCompositionView(self)
+        self.stack.addWidget(self.simple)
+        self.stack.addWidget(self.advanced_page)
+        self.set_advanced(False)
         self._building = False
         self.thumb_timer = QTimer(self)
         self.thumb_timer.setSingleShot(True)
@@ -500,9 +518,33 @@ class ComposerDialog(QDialog):
                 item = self.material_items.get(Path(initial_paths[1]).resolve())
                 if item:
                     self.materials.setCurrentItem(item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                    self.simple.select_source(Path(initial_paths[1]).resolve())
+
+    def is_advanced(self):
+        return self.stack.currentWidget() is self.advanced_page
+
+    def set_advanced(self, enabled):
+        self.stack.setCurrentWidget(self.advanced_page if enabled else self.simple)
+        self.mode_button.setText("返回普通组合" if enabled else "高级组合")
+        self.quick_button.setVisible(enabled and self.quick_merge_factory is not None)
+        self.setMinimumSize(1100 if enabled else 900, 700 if enabled else 620)
+        self.schedule_thumbnails()
+
+    def open_quick_merge(self):
+        if not self.quick_merge_factory or self._closing:
+            return
+        dialog = self.quick_merge_factory(self, initial_paths=self.paths, protected_paths=[*self.paths, *self.protected])
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.quick_merge_request = (dialog.source_paths(), dialog.output_path(), dialog.source_states(), dialog.load_after_merge())
+                self.done(QDialog.DialogCode.Accepted)
+        finally:
+            dialog.deleteLater()
 
     def tell(self, message):
         self.notice.setText(message)
+        if hasattr(self, "simple"):
+            self.simple.notice.setText(message)
 
     def selected_ids(self):
         return [item.data(0, ROLE) for item in self.tree.selectedItems()]
@@ -549,6 +591,7 @@ class ComposerDialog(QDialog):
                 self.tell(str(exc))
         if self.materials.currentRow() < 0 and self.materials.count():
             self.materials.setCurrentRow(0)
+        self.simple.refresh_sources()
         QTimer.singleShot(0, self.start_inspection)
 
     def set_main(self, path):
@@ -578,7 +621,11 @@ class ComposerDialog(QDialog):
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
-            self.add_materials([Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()])
+            paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+            if self.is_advanced():
+                self.add_materials(paths)
+            else:
+                self.simple.add_files(paths, use_as_base=True)
             event.acceptProposedAction()
 
     def material_selected(self, item, _previous=None):
@@ -639,6 +686,7 @@ class ComposerDialog(QDialog):
         if self._closing or generation != self._generation or info.path not in self.paths:
             return
         self.infos[info.path] = info
+        self.simple.refresh_sources()
         item = self.material_items[info.path]
         item.setText(f"{info.path.name} · " + (f"不可用：{info.error}" if info.error else f"{info.pages} 页 · {format_bytes(info.state.size)}"))
         item.setForeground(QColor("#C03535" if info.error else "#18181B"))
@@ -668,6 +716,7 @@ class ComposerDialog(QDialog):
             self.preview_dialog.close()
         self.infos.clear()
         self.cache.clear()
+        self.simple.refresh_sources()
         for name in ("inspect", "thumb", "preview"):
             if name in self.jobs:
                 self.jobs[name][1].cancel()
@@ -815,6 +864,7 @@ class ComposerDialog(QDialog):
             self.tree.setCurrentItem(self.tree_items[selected[0]], 0, QItemSelectionModel.SelectionFlag.NoUpdate)
         self.tree.blockSignals(False)
         self.output_browser.set_output(self.plan.pages())
+        self.simple.output.pages.reset_output()
         self.update_summary()
         self.schedule_thumbnails()
 
@@ -850,6 +900,10 @@ class ComposerDialog(QDialog):
         self.tree_summary.setText(f"成品：{len(refs)} 页，来自 {len(sources)} 个 PDF\n当前插入参考：{target}")
         self.status.setText(f"素材库 {len(self.paths)} 份 · 合成 {len(refs)} 页" + (f" · {invalid} 页待检查或不可用" if invalid else " · 分组将保存为书签") + (" · 使用的源文件超过 16 GiB，请分批" if used_bytes > 16 * 1024**3 else ""))
         self.save_button.setEnabled(bool(refs) and not invalid and used_bytes <= 16 * 1024**3 and bool(self.output_edit.text().strip()) and not self._closing)
+        self.simple.save_button.setEnabled(bool(refs) and not invalid and used_bytes <= 16 * 1024**3 and not self._closing)
+        self.simple.output_label.setText(f"新的 PDF · {len(refs)} 页")
+        self.simple.status.setText("使用的源文件超过 16 GiB，请分批组合" if used_bytes > 16 * 1024**3 else
+                                   f"{invalid} 页待检查或不可用" if invalid else "源文件保持不变 · 保存后可继续压缩")
 
     def thumbnail_icon(self, ref):
         info = self.infos.get(ref.source)
@@ -862,6 +916,8 @@ class ComposerDialog(QDialog):
             self.thumb_timer.start()
 
     def wanted_thumbnails(self):
+        if not self.is_advanced():
+            return list(dict.fromkeys(self.simple.output.visible_refs() + self.simple.source.visible_refs()))
         refs = self.left_tabs.currentWidget().current_refs() + self.material_browser.current_refs()
         item = self.tree.itemAt(QPoint(6, 3))
         if item is None and self.tree.topLevelItemCount():
@@ -916,6 +972,8 @@ class ComposerDialog(QDialog):
         self.refresh_icon(ref)
 
     def refresh_icon(self, ref):
+        self.simple.output.viewport().update()
+        self.simple.source.viewport().update()
         for browser in (self.main_browser, self.output_browser, self.material_browser):
             browser.update_thumbnail(ref)
         for tree_item in self.ref_items.get(ref, []):
@@ -1038,7 +1096,7 @@ class ComposerDialog(QDialog):
         event.ignore() if self.jobs else event.accept()
 
 
-def smoke_test(dialog_factory, worker_factory, app_style, screenshot=None):
+def smoke_test(dialog_factory, worker_factory, app_style, screenshot=None, simple=False):
     """Exercise real inspection, thumbnails, page preview, tree export and ordering."""
     import os
     import tempfile
@@ -1089,13 +1147,53 @@ def smoke_test(dialog_factory, worker_factory, app_style, screenshot=None):
                 document.save(path)
             sources.append(path)
         dialog = dialog_factory(None, sources)
+        dialog.set_advanced(not simple)
         dialog.show()
         try:
             wait_for(lambda: len(dialog.infos) == 3 and len(dialog.cache) >= 7 and not dialog.jobs)
             assert len(dialog.plan.pages()) == 4
             group = dialog.plan.root.children[0]
-            dialog.insert_pages([PageRef(sources[1], 0), PageRef(sources[1], 2)], group="补充图表", target=(group.uid, 2))
-            dialog.insert_pages([PageRef(sources[2], 1)], group="附件", target=("root", 1))
+            if simple:
+                from PySide6.QtCore import QPointF
+                from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+
+                assert dialog.simple.output.viewport().acceptDrops()
+                assert dialog.simple.source.viewport().acceptDrops()
+
+                def dispatch_drop(view, mime, point, action):
+                    for event_type in (QDragEnterEvent, QDragMoveEvent, QDropEvent):
+                        position = QPointF(point) if event_type is QDropEvent else point
+                        event = event_type(position, action, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+                        app.sendEvent(view.viewport(), event)
+                        assert event.isAccepted(), f"Viewport rejected {event_type.__name__}"
+                    app.processEvents()
+
+                def drag_pages(source, indices, position):
+                    view = dialog.simple.output
+                    if position < view.pages.count:
+                        rect = view.visualRect(view.pages.index(position))
+                        point = QPoint(rect.left() + 8, rect.center().y())
+                    else:
+                        point = QPoint(8, view.viewport().height() - 8)
+                    mime = QMimeData()
+                    mime.setData(PAGE_MIME, json.dumps({"session": dialog.session, "kind": "pages",
+                                                       "pages": [[str(source), i] for i in indices]}).encode())
+                    dispatch_drop(view, mime, point, Qt.DropAction.CopyAction)
+
+                drag_pages(sources[1], [0, 2], 2)
+                drag_pages(sources[2], [1], 6)
+                before = list(dialog.simple.output.pages.entries)
+                mime = QMimeData()
+                mime.setData(PAGE_MIME, json.dumps({"session": dialog.session, "kind": "nodes",
+                                                   "nodes": [before[0][0]]}).encode())
+                view = dialog.simple.output
+                dispatch_drop(view, mime, QPoint(8, view.viewport().height() - 8), Qt.DropAction.MoveAction)
+                assert view.pages.entries == before[1:] + before[:1]
+                dialog.undo()
+                assert view.pages.entries == before
+            else:
+                dialog.insert_pages([PageRef(sources[1], 0), PageRef(sources[1], 2)], group="补充图表", target=(group.uid, 2))
+                dialog.insert_pages([PageRef(sources[2], 1)], group="附件", target=("root", 1))
             desired = [PageRef(sources[0], 0), PageRef(sources[0], 1), PageRef(sources[1], 0), PageRef(sources[1], 2), PageRef(sources[0], 2), PageRef(sources[0], 3), PageRef(sources[2], 1)]
             assert dialog.plan.pages() == desired
             dialog.undo()

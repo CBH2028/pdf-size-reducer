@@ -2,6 +2,28 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.13.1 - 2026-09-07
+
+### Fix drag-and-drop event delivery
+
+- Explicitly enable drop acceptance on both simple-composer viewports. Previously the outer list accepted drops but the actual page area did not, so pages could be dragged without inserting or reordering on release. PDF file drops into the material pane were affected too.
+- Send regression drag-enter, drag-move and drop events through Qt's viewport dispatch instead of calling handlers directly. Add mouse-press-to-drag initiation, single/multiple-page copy and move, cancellation, mode-switch/resize and rejection checks. The strengthened tests reproduce eight failures on the unfixed implementation.
+- Update the packaged simple-composer check to exercise viewport dispatch for insertion and reordering, undo and original-page export. The earlier direct-handler tests did not cover this event-delivery failure.
+- Keep the simple interface, advanced tools, source protection and existing accelerator unchanged.
+- Verification: all 216 Python tests passed. The packaged Windows executable passed all five checks: native-worker discovery, whole-merge UI, advanced composer, viewport-dispatched simple composer and compression workflow (exit code 0).
+
+## 3.13.0 - 2026-09-07
+
+### Simple drag-and-drop composition
+
+- Make the default composer a two-pane workspace: result pages on the left, material pages on the right. Drag source pages to a visible insertion gap; drag result pages to reorder them. Support multiple PDF materials through a compact selector.
+- Keep only Add PDF, Save PDF and Advanced composition visible as buttons. Move the tree, groups, page ranges, insertion controls, source rechecking, output settings and whole-document queue into Advanced. Remove the separate whole-merge button from the main window.
+- Share the exact composition plan, groups, page identities, bookmarks and undo history between modes. Preserve intentional repeated pages when reordering; cancelling save or the advanced whole-document queue keeps the plan intact.
+- Add continuous, model-backed thumbnail lists with visible-page rendering, batched layout and drag-edge scrolling. Support Ctrl/Shift multi-selection, hover removal, Delete, undo/redo shortcuts, a context menu and double-click zoom without a visible editing toolbar.
+- Retain original-page export, overwrite/source-state protection, isolated cancellable jobs and the existing compression handoff. No text editor is restored; the matched protocol-3 Rust/C++ accelerator is unchanged. No additional speedup is claimed.
+- Add 31 simple-mode regression cases and `--simple-composer-self-test`, including actual drop handlers, multi-page moves, repeated-page identity, mode switching, whole-merge routing, save cancellation, overwrite protection, large-document scrolling and keyboard controls. Update both READMEs, the composition guide and the simple-mode screenshot.
+- Verification: all 209 Python tests passed. The packaged Windows executable passed native-worker discovery, quick-merge UI, advanced composer, simple composer and the compression workflow checks (all exit code 0).
+
 ## 3.12.0 - 2026-09-07
 
 ### Three-column visual page composition

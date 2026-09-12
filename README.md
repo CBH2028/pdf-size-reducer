@@ -14,7 +14,7 @@ When an assignment portal, application form, expense system, or submission site 
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-178%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-216%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -62,9 +62,9 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 
 | Feature | What it does |
 | --- | --- |
-| Three-column visual composition | Main PDF and live output preview on the left, a nested composition tree in the middle, and a searchable multi-PDF material library on the right. |
-| Page-level assembly | Drag individual pages, page selections or whole PDFs into branches. Insert before/after a page, nest groups, reorder across branches, and undo/redo. Group names become output bookmarks. |
-| Friendly merge queue | Drop PDFs directly into the list, move multiple selected files together, sort filenames naturally, undo list changes, and check page/size totals before saving. |
+| Simple drag-and-drop composition | Result pages on the left, material pages on the right. Drag to insert or reorder, then save. No tree, page-range fields or insertion buttons in the default view. |
+| Advanced composition when needed | One toggle reveals the three-pane tree, nested groups, page ranges and extra controls. Both modes share the same plan and undo history; group names become bookmarks. |
+| Whole-document merge in Advanced | Open the optional file queue from Advanced composition to merge entire PDFs, reorder multiple files, sort naturally, undo and check totals. |
 | Compose and compress | Assemble selected original pages without rasterizing them, then optionally continue to the accelerated compression workspace. Compatible whole-document plans retain the guarded native merge path. |
 | Exact size target | Enter MB or KB. The app searches for the clearest result at or below the target instead of padding a file with meaningless bytes. |
 | Loss-minimizing workflow | Lossless structural optimization is tried first. Image or Figure data is reduced only when lossless work cannot reach the target. |
@@ -113,28 +113,30 @@ from silently applying old Figure selections to new content. Desktop tasks
 prepare output in temporary files; the application installs the final PDF only
 after successful completion and a final cancellation check.
 
-### Visually compose pages from multiple PDFs
+### Compose pages by dragging
 
-1. Click **Visual PDF composition** (`可视化合成 PDF · 自由选页`). The currently loaded PDF becomes the main source. Dropping several PDFs onto the main window uses the first as the main PDF and puts the others in the material library.
-2. On the **left**, browse the main PDF's page thumbnails. On the **right**, add or drop more material PDFs, search filenames, and select a document to display its pages. Adding material does not automatically add it to the result.
-3. Select pages with Ctrl/Shift, or enter ranges such as `1, 3-5`. Drag them into the **middle tree**, or choose an insertion mode and use the insert button. Dropping near a row's top/bottom inserts before/after it; dropping in the center of a group adds children to that group.
-4. Drag whole material PDFs into the tree to create branches. Create and rename nested groups, move pages between branches, and reorder multiple selected nodes together. Undo/redo restores tree operations. Removing nodes only omits them from the new output; it never deletes source files.
-5. Switch the left pane to **Live composition preview** to see output order and source page numbers. Selecting a page in the tree reveals its output thumbnail. Double-click any page for a larger, zoomable preview.
-6. Choose a new output filename and either save only or continue to compression. The generated PDF follows the tree's depth-first page order; group names become bookmarks. Compression saves another independent result.
+v3.13.1 fixes drops that did nothing in v3.13.0. Launch the updated executable; an already-open window continues running the old version.
 
-![Three-column visual PDF composition](docs/images/pdf-composer.png)
+1. Click **Compose PDF** (`组合 PDF · 拖动页面即可`). The currently loaded PDF fills the left result pane. In an empty composer, drop the main PDF onto the left; additional dropped PDFs become materials.
+2. Drop more PDFs onto the **right**, or click **Add PDF** (`添加 PDF`). Pick a material document from the dropdown and drag its pages to a gap on the **left**. The colored marker shows the insertion position. Adding material does not concatenate whole documents.
+3. Drag result pages to reorder them. Ctrl/Shift selects several pages; the hover **×** or Delete omits pages from the result only. Ctrl+Z undoes a change; Ctrl+Shift+Z/Ctrl+Y redoes it. Double-click a page to zoom in.
+4. Click **Save PDF** (`保存 PDF`) and choose a new filename. Cancelling keeps the workspace intact. By default the saved PDF opens in the compression workspace; choose a target there if needed.
 
-The material library no longer has the quick merger's 100-file cap. It inspects files in batches and loads paginated thumbnails on demand. Resource limits still apply: at most 20,000 output pages, 12 tree levels, 4 GiB per PDF and 16 GiB across the source PDFs actually used by a composition. See the [composition guide](docs/COMPOSING.md) for exact controls and preservation limits.
+![Simple drag-and-drop PDF composition](docs/images/pdf-composer-simple.png)
 
-### Quick whole-document merge (optional)
+**Advanced composition** (`高级组合`) contains the tree, nested groups/bookmarks, typed page ranges, insertion buttons, source rechecking, save-only choice and whole-document merge. Switching modes preserves the exact plan, groups and undo history. [Advanced workspace screenshot](docs/images/pdf-composer.png).
 
-1. Click **Quick whole-document merge** (`整份快速合并…`).
+The material library has no fixed file-count cap. Simple-mode thumbnails scroll continuously and load on demand; advanced browsers retain 24-page batches. Resource limits remain: 20,000 output pages, 12 tree levels, 4 GiB per PDF and 16 GiB across used sources. See the [composition guide](docs/COMPOSING.md) for controls and preservation limits.
+
+### Whole-document merge (Advanced)
+
+1. Open **Compose PDF → Advanced composition → Whole-document merge** (`组合 PDF → 高级组合 → 整份合并…`). The material library preloads the queue. Cancelling returns to the unchanged composition plan; completing this queue saves the queued documents instead of the page plan.
 2. Drop more PDFs directly into the merge list. Check each file's page count, size and folder, along with the totals. Double-click an entry to inspect it in your default PDF reader.
 3. Drag to reorder, or use **Ctrl / Shift** to select several entries and move them together with **Move up / Move down** or **Alt+Up / Alt+Down**. **Sort by filename** puts `1, 2, 10` in natural order. Remove/clear only affects the list; **Undo list action** restores your previous queue.
 4. Edit the suggested output name or choose a different folder. The default name avoids existing files. If you decline an overwrite, the queue stays open so you can choose another name.
 5. Choose **Continue to compression** (`继续压缩：先预览，再设置目标大小`), then click **Merge and continue**. After the merged document loads, review its Figures, set an MB/KB target, and start compression. The compressed result is saved separately from the merged PDF.
 
-Choose **Merge only** (`只合并，保存 PDF`) if you do not need compression. Opening the merge dialog from an already-loaded PDF adds that file to the queue; an explicit multi-file drop uses only the dropped files. Duplicates and invalid paths are reported. Background checks flag unreadable/password-protected inputs; use **Recheck files** if a source changes. Inputs are limited to 100 PDFs, 4 GiB per file and 16 GiB in total.
+Choose **Merge only** (`只合并，保存 PDF`) if you do not need compression. Duplicates and invalid paths are reported. Background checks flag unreadable/password-protected inputs; use **Recheck files** if a source changes. This optional queue is limited to 100 PDFs, 4 GiB per file and 16 GiB in total; check the queue when a larger material library is preloaded.
 
 ![Merge queue with natural sorting and page totals](docs/images/pdf-merge.png)
 
@@ -207,8 +209,11 @@ and cancellation before final output installation (exit code 0 means success).
 This complements `--native-worker-self-test`, which only checks worker discovery.
 Use `--merge-ui-self-test` to check the actual merge queue, background page inspection,
 multi-selection ordering, undo, and preflight-checked guarded output in a packaged build.
-Use `--composer-self-test` to check the three-column workspace, real page thumbnails,
-zoom preview, nested tree insertion, undo/redo, selected-page export and bookmark order.
+Use `--composer-self-test` to check the advanced three-column workspace and nested
+tree insertion, or `--simple-composer-self-test` for the default two-pane drag/drop
+workspace. The simple check sends drag events through Qt's viewport dispatch and
+checks insertion and reordering. Both cover real thumbnails, zoom preview,
+undo/redo, selected-page export and bookmark order.
 
 ## Project structure
 
@@ -216,7 +221,8 @@ zoom preview, nested tree insertion, undo/redo, selected-page export and bookmar
 pdf-size-reducer/
 ├── qt_app.py              # Qt 6 desktop UI and background jobs
 ├── merge_ui.py            # Merge queue, metadata preflight, ordering and save choices
-├── composer_ui.py         # Three-column visual composition and paginated page previews
+├── composer_ui.py         # Shared composition jobs, validation and advanced tree UI
+├── simple_composer_ui.py  # Default two-pane drag-and-drop page workspace
 ├── pdf_composer.py        # Composition tree and non-rasterizing selected-page writer
 ├── qt_dispatch.py         # Explicit GUI-thread dispatch for asynchronous callbacks
 ├── compressor.py          # Figure discovery, rendering, and targeting engine
