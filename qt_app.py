@@ -33,10 +33,12 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
+    QCursor,
     QDragEnterEvent,
     QDropEvent,
     QFont,
     QIcon,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -49,6 +51,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -96,10 +99,17 @@ from process_jobs import WorkerJob, gated_worker
 from merge_ui import MergeDialog, inspect_merge_input
 from pdf_composer import compose_pdf, render_page_png
 from composer_ui import ComposerDialog
+from graphics_export import (
+    MANIFEST_NAME,
+    GraphicsExportResult,
+    export_pdf_graphics,
+    install_graphics_export,
+    suggest_graphics_export_directory,
+)
 
 
 APP_NAME = "PDF 定容压缩工具"
-APP_VERSION = "3.13.1"
+APP_VERSION = "3.14.0"
 ACCENT = "#635BFF"
 ACCENT_HOVER = "#5149E8"
 TEXT = "#18181B"
@@ -741,6 +751,160 @@ def make_app_icon() -> QIcon:
     painter.drawLine(QPoint(25, 42), QPoint(35, 42))
     painter.end()
     return QIcon(pixmap)
+
+
+class AnimatedStartupSplash(QWidget):
+    """Frameless animated handoff after the bootloader's early splash."""
+
+    WIDTH = 720
+    HEIGHT = 420
+
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setFixedSize(self.WIDTH, self.HEIGHT)
+        self.setWindowTitle(f"{APP_NAME} 正在启动")
+        self.status_text = "正在初始化界面"
+        self._icon_pixmap = make_app_icon().pixmap(70, 70)
+        self._phase = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._advance)
+
+    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.move(
+                available.center().x() - self.width() // 2,
+                available.center().y() - self.height() // 2,
+            )
+        self._timer.start()
+        super().showEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._timer.stop()
+        super().closeEvent(event)
+
+    def set_status(self, message: str) -> None:
+        self.status_text = message
+        self.update()
+
+    def finish(self, window: QWidget) -> None:
+        self._timer.stop()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        self.close()
+        self.deleteLater()
+
+    def _advance(self) -> None:
+        self._phase = (self._phase + 1) % 720
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # type: ignore[no-untyped-def]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        shadow = QRectF(18, 22, self.WIDTH - 36, self.HEIGHT - 38)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(22, 18, 62, 42))
+        painter.drawRoundedRect(shadow.translated(0, 7), 30, 30)
+
+        card = QRectF(18, 15, self.WIDTH - 36, self.HEIGHT - 38)
+        background = QLinearGradient(card.topLeft(), card.bottomRight())
+        background.setColorAt(0.0, QColor("#FCFCFF"))
+        background.setColorAt(0.52, QColor("#F7F6FF"))
+        background.setColorAt(1.0, QColor("#EEEFFF"))
+        painter.setBrush(background)
+        painter.setPen(QPen(QColor("#E4E1FF"), 1))
+        painter.drawRoundedRect(card, 30, 30)
+
+        pulse = 52 + 5 * (0.5 + 0.5 * math.sin(self._phase / 17))
+        center = QPoint(self.WIDTH // 2, 126)
+        painter.setPen(QPen(QColor(99, 91, 255, 34), 10))
+        painter.drawEllipse(center, round(pulse), round(pulse))
+        painter.setPen(QPen(QColor(99, 91, 255, 26), 2))
+        painter.drawEllipse(center, round(pulse + 12), round(pulse + 12))
+
+        arc_pen = QPen(QColor(99, 91, 255, 230), 5)
+        arc_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(arc_pen)
+        painter.drawArc(
+            QRectF(center.x() - 51, center.y() - 51, 102, 102),
+            -self._phase * 8 * 16,
+            92 * 16,
+        )
+        painter.drawPixmap(center.x() - 35, center.y() - 35, self._icon_pixmap)
+
+        painter.setPen(QColor("#19191F"))
+        title_font = QFont("Segoe UI Variable")
+        title_font.setPixelSize(27)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(title_font)
+        painter.drawText(
+            QRectF(40, 205, self.WIDTH - 80, 40),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            "PDF Size Reducer",
+        )
+
+        painter.setPen(QColor("#777382"))
+        subtitle_font = QFont("Segoe UI Variable")
+        subtitle_font.setPixelSize(13)
+        painter.setFont(subtitle_font)
+        painter.drawText(
+            QRectF(40, 246, self.WIDTH - 80, 28),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            "安全合并 · 智能压缩 · 高清图导出",
+        )
+
+        track = QRectF(91, 302, self.WIDTH - 182, 6)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#E2E0EF"))
+        painter.drawRoundedRect(track, 3, 3)
+        shimmer_width = 120
+        travel = track.width() + shimmer_width
+        shimmer_x = track.x() - shimmer_width + (self._phase * 4.5) % travel
+        shimmer = QLinearGradient(shimmer_x, 0, shimmer_x + shimmer_width, 0)
+        shimmer.setColorAt(0.0, QColor(99, 91, 255, 0))
+        shimmer.setColorAt(0.5, QColor(99, 91, 255, 240))
+        shimmer.setColorAt(1.0, QColor(99, 91, 255, 0))
+        painter.save()
+        painter.setClipRect(track)
+        painter.setBrush(shimmer)
+        painter.drawRoundedRect(
+            QRectF(shimmer_x, track.y(), shimmer_width, track.height()), 3, 3
+        )
+        painter.restore()
+
+        dots = "." * ((self._phase // 16) % 4)
+        painter.setPen(QColor("#655EE0"))
+        status_font = QFont("Microsoft YaHei UI")
+        status_font.setPixelSize(12)
+        status_font.setWeight(QFont.Weight.Medium)
+        painter.setFont(status_font)
+        painter.drawText(
+            QRectF(50, 327, self.WIDTH - 100, 30),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            f"{self.status_text}{dots}",
+        )
+
+        painter.setPen(QColor("#AAA7B6"))
+        footer_font = QFont("Segoe UI Variable")
+        footer_font.setPixelSize(10)
+        painter.setFont(footer_font)
+        painter.drawText(
+            QRectF(50, 368, self.WIDTH - 100, 22),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            f"VERSION {APP_VERSION}  ·  100% LOCAL PROCESSING",
+        )
+        painter.end()
 
 
 def add_shadow(widget: QWidget, blur: int = 24, y_offset: int = 6) -> None:
@@ -1877,6 +2041,173 @@ class MergeWorker(QObject):
         )
 
 
+def _graphics_export_process(
+    source,
+    destination,
+    assets,
+    formats,
+    source_state,
+    result_queue,
+    cancel_event,
+):
+    """Export graphics outside the GUI process."""
+    try:
+        result = export_pdf_graphics(
+            source,
+            destination,
+            assets,
+            formats=formats,
+            expected_source_state=source_state,
+            progress_callback=lambda value, message: result_queue.put(
+                ("progress", value, message)
+            ),
+            cancel_event=cancel_event,
+        )
+    except CompressionCancelled:
+        result_queue.put(("cancelled",))
+    except Exception as exc:
+        result_queue.put(("failed", str(exc)))
+    else:
+        result_queue.put(("completed", result))
+
+
+class GraphicsExportWorker(QObject):
+    """Cancellable, staged writer for a complete graphics export directory."""
+
+    progress = Signal(int, str)
+    completed = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        source: Path,
+        destination: Path,
+        assets: list[PDFAsset],
+        source_state: PDFSourceState | None,
+        formats: frozenset[str] = frozenset({"svg"}),
+    ) -> None:
+        super().__init__()
+        self.source = source
+        self.destination = destination
+        self.assets = list(assets)
+        self.source_state = source_state
+        self.formats = frozenset(formats)
+        self.cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            source = self.source.expanduser().resolve()
+            destination = self.destination.expanduser().resolve()
+            current_state = get_pdf_source_state(source)
+            if self.source_state is not None and current_state != self.source_state:
+                raise CompressionError("源 PDF 已更改，请重新加载后再导出。")
+            if destination.exists():
+                raise CompressionError("导出文件夹已经存在；为安全起见不会覆盖。")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix=".pdf_graphics_job_", dir=destination.parent
+            ) as directory:
+                candidate = Path(directory) / "export"
+
+                def install(result: GraphicsExportResult) -> GraphicsExportResult:
+                    if result.output_directory.resolve() != candidate.resolve():
+                        raise CompressionError("后台任务返回了无效的导出位置。")
+                    install_graphics_export(
+                        candidate,
+                        destination,
+                        source,
+                        current_state,
+                        self.cancel_event,
+                    )
+                    return replace(
+                        result,
+                        output_directory=destination,
+                        manifest_path=destination / MANIFEST_NAME,
+                    )
+
+                _run_pdf_process(
+                    self,
+                    _graphics_export_process,
+                    (source, candidate, self.assets, self.formats, current_state),
+                    "PDFGraphicsExporter",
+                    complete=install,
+                )
+        except CompressionCancelled:
+            self.cancelled.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class GraphicsExportOptionsDialog(QDialog):
+    """Small checkbox-based format chooser shown before folder selection."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("选择高清图导出格式")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("需要导出哪些格式？")
+        title.setProperty("title", True)
+        layout.addWidget(title)
+        hint = QLabel("可以同时勾选多种格式；右侧已勾选的图形会按所选格式导出。")
+        hint.setProperty("secondary", True)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.svg_check = QCheckBox("SVG · 矢量编辑与无限缩放")
+        self.svg_check.setChecked(True)
+        self.png_check = QCheckBox("PNG · 600 DPI 高清图片")
+        self.pdf_check = QCheckBox("PDF · 每张图单独一页，优先保留原生矢量")
+        for checkbox in (self.svg_check, self.png_check, self.pdf_check):
+            checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+            checkbox.toggled.connect(self._update_accept_enabled)
+            layout.addWidget(checkbox)
+
+        note = QLabel(
+            "说明：原本是位图的内容在 SVG/PDF 中仍按原始像素嵌入，"
+            "不会被虚假标记为真矢量。"
+        )
+        note.setProperty("secondary", True)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addSpacing(4)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("继续选择保存位置")
+        self.buttons.rejected.connect(self.reject)
+        self.buttons.accepted.connect(self.accept)
+        layout.addWidget(self.buttons)
+        self._update_accept_enabled()
+
+    def selected_formats(self) -> frozenset[str]:
+        selected: set[str] = set()
+        if self.svg_check.isChecked():
+            selected.add("svg")
+        if self.png_check.isChecked():
+            selected.add("png")
+        if self.pdf_check.isChecked():
+            selected.add("pdf")
+        return frozenset(selected)
+
+    def _update_accept_enabled(self) -> None:
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
+            bool(self.selected_formats())
+        )
+
+
 def _preview_process(path, asset, destination, source_state, result_queue, cancel_event):
     try:
         if cancel_event.is_set():
@@ -2287,6 +2618,8 @@ class MainWindow(QMainWindow):
         self.compression_worker: CompressionWorker | None = None
         self.merge_thread: QThread | None = None
         self.merge_worker: MergeWorker | None = None
+        self.graphics_export_thread: QThread | None = None
+        self.graphics_export_worker: GraphicsExportWorker | None = None
         self.merge_load_after = True
         self.processing_busy = False
         self._closing = False
@@ -2424,6 +2757,15 @@ class MainWindow(QMainWindow):
         self.merge_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.merge_button.clicked.connect(lambda: self.open_merge_dialog())
         file_layout.addWidget(self.merge_button)
+        self.export_graphics_button = QPushButton("导出已选高清图…")
+        self.export_graphics_button.setProperty("quiet", True)
+        self.export_graphics_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_graphics_button.setToolTip(
+            "自主勾选 SVG、PNG、PDF；完整 Figure 优先保留原有矢量"
+        )
+        self.export_graphics_button.setEnabled(False)
+        self.export_graphics_button.clicked.connect(lambda: self.export_all_graphics())
+        file_layout.addWidget(self.export_graphics_button)
         sidebar_layout.addWidget(file_card)
 
         target_card = self._card()
@@ -2702,6 +3044,130 @@ class MainWindow(QMainWindow):
         if selected:
             self._load_input(Path(selected))
 
+    def export_all_graphics(self, formats=None) -> None:
+        """Export exactly the Figures/images checked in the preview list."""
+        if self.processing_busy or self.assets_loading or self._closing:
+            return
+        try:
+            if not self.input_path or not self.input_path.is_file():
+                raise ValueError("请先选择一个存在的 PDF 文件。")
+            if not self.assets:
+                raise ValueError("这份 PDF 中没有识别到可导出的 Figure 或独立图片。")
+            selected_assets = [
+                asset
+                for asset in self.assets
+                if asset.key in self.selected_asset_keys
+            ]
+            if not selected_assets:
+                raise ValueError("请先在右侧勾选至少一个需要导出的图形。")
+            if self.input_source_state is None:
+                raise ValueError("PDF 尚未读取完成，请稍候。")
+            if get_pdf_source_state(self.input_path) != self.input_source_state:
+                raise ValueError("源 PDF 已更改，请重新加载后再导出。")
+        except (ValueError, OSError, RuntimeError) as exc:
+            self._show_error(str(exc))
+            return
+
+        if formats is None:
+            options = GraphicsExportOptionsDialog(self)
+            if options.exec() != QDialog.DialogCode.Accepted:
+                options.deleteLater()
+                return
+            selected_formats = options.selected_formats()
+            options.deleteLater()
+        else:
+            selected_formats = frozenset(formats)
+        if not selected_formats:
+            self._show_error("请至少勾选一种导出格式。")
+            return
+
+        parent = QFileDialog.getExistingDirectory(
+            self,
+            "选择高清图保存位置（将自动新建文件夹）",
+            str(self.input_path.parent),
+        )
+        if not parent:
+            return
+        destination = suggest_graphics_export_directory(self.input_path, parent)
+        self.progress_bar.setValue(0)
+        self.status_label.setText(
+            f"正在准备导出 {len(selected_assets)} 个已选图形…"
+        )
+        self.status_indicator.set_state("working")
+        self.result_label.clear()
+        self.result_label.setStyleSheet("")
+        self.open_button.setText("打开高清图文件夹")
+        self._set_busy(True)
+
+        self.graphics_export_thread = QThread(self)
+        self.graphics_export_worker = GraphicsExportWorker(
+            self.input_path,
+            destination,
+            selected_assets,
+            self.input_source_state,
+            selected_formats,
+        )
+        self.graphics_export_worker.moveToThread(self.graphics_export_thread)
+        self.graphics_export_thread.started.connect(self.graphics_export_worker.run)
+        self.graphics_export_worker.progress.connect(self._graphics_export_progress)
+        self.graphics_export_worker.completed.connect(self._graphics_export_completed)
+        self.graphics_export_worker.failed.connect(self._graphics_export_failed)
+        self.graphics_export_worker.cancelled.connect(self._graphics_export_cancelled)
+        self.graphics_export_worker.completed.connect(self.graphics_export_thread.quit)
+        self.graphics_export_worker.failed.connect(self.graphics_export_thread.quit)
+        self.graphics_export_worker.cancelled.connect(self.graphics_export_thread.quit)
+        self.graphics_export_thread.finished.connect(
+            self.graphics_export_worker.deleteLater
+        )
+        current_thread = self.graphics_export_thread
+        self.graphics_export_thread.finished.connect(
+            lambda thread=current_thread: self._graphics_export_thread_finished(thread)
+        )
+        self.graphics_export_thread.start()
+
+    def _graphics_export_thread_finished(self, thread: QThread) -> None:
+        if self.graphics_export_thread is thread:
+            self.graphics_export_worker = None
+            self.graphics_export_thread = None
+
+    @Slot(int, str)
+    def _graphics_export_progress(self, value: int, message: str) -> None:
+        self.progress_bar.set_smooth_value(value)
+        self.status_label.setText(message)
+
+    @Slot(object)
+    def _graphics_export_completed(self, result: GraphicsExportResult) -> None:
+        self._set_busy(False)
+        self.progress_bar.set_smooth_value(100)
+        self.status_label.setText("已选高清图导出完成")
+        self.status_indicator.set_state("success")
+        self.last_output = result.output_directory
+        self.open_button.setText("打开高清图文件夹")
+        self.open_button.setEnabled(True)
+        self.result_label.setText(
+            f"{result.item_count} 项 · {result.svg_count} 个 SVG · "
+            f"{result.png_count} 个 PNG · {result.pdf_count} 个 PDF\n"
+            f"{format_bytes(result.total_bytes)} · 矢量保持 / 原像素无损嵌入"
+        )
+        self.result_label.setStyleSheet(f"color: {SUCCESS}; font-weight: 650;")
+        Toast(self, f"高清图导出完成 · {result.item_count} 项")
+
+    @Slot(str)
+    def _graphics_export_failed(self, message: str) -> None:
+        self._set_busy(False)
+        self.status_label.setText("高清图导出失败")
+        self.status_indicator.set_state("error")
+        self.result_label.setText(message)
+        self.result_label.setStyleSheet(f"color: {ERROR}; font-weight: 650;")
+        self._show_error(message)
+
+    @Slot()
+    def _graphics_export_cancelled(self) -> None:
+        self._set_busy(False)
+        self.status_label.setText("高清图导出已取消")
+        self.status_indicator.set_state("idle")
+        self.result_label.setText("没有生成不完整的导出文件夹，源 PDF 未发生变化。")
+
     def open_merge_dialog(self, initial_paths: list[Path] | None = None) -> None:
         if (self.assets_loading or self.processing_busy or self._closing
                 or (self.merge_thread and self.merge_thread.isRunning())
@@ -2755,6 +3221,7 @@ class MainWindow(QMainWindow):
         self.status_indicator.set_state("working")
         self.result_label.clear()
         self.result_label.setStyleSheet("")
+        self.open_button.setText("打开输出文件夹")
         self._set_busy(True)
 
         self.merge_thread = QThread(self)
@@ -2849,6 +3316,7 @@ class MainWindow(QMainWindow):
         self.selected_asset_keys.clear()
         self.file_button.setEnabled(False)
         self.merge_button.setEnabled(False)
+        self.export_graphics_button.setEnabled(False)
         self.file_button.setText("读取中…")
         self.start_button.setEnabled(False)
         self.selection_info.setText("正在识别完整 Figure，请稍候…")
@@ -2957,6 +3425,7 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
+        self.export_graphics_button.setEnabled(False)
         self.file_button.setText("浏览…")
         self.assets = []
         self.input_source_state = None
@@ -2976,6 +3445,7 @@ class MainWindow(QMainWindow):
         self.assets_loading = False
         self.file_button.setEnabled(True)
         self.merge_button.setEnabled(True)
+        self.export_graphics_button.setEnabled(False)
         self.file_button.setText("浏览…")
         self.assets = []
         self.input_source_state = None
@@ -3070,6 +3540,7 @@ class MainWindow(QMainWindow):
         self.file_button.setText("浏览…")
         self.start_button.setEnabled(True)
         self._update_selection_info()
+        self._update_export_graphics_button()
         self.status_label.setText(
             f"已读完 {page_count} 页，选择图形后即可开始压缩"
         )
@@ -3158,6 +3629,7 @@ class MainWindow(QMainWindow):
         else:
             self.selected_asset_keys.discard(key)
         self._update_selection_info()
+        self._update_export_graphics_button()
 
     def _set_selection(self, kind: str | None, value: bool) -> None:
         for asset in self.assets:
@@ -3170,6 +3642,19 @@ class MainWindow(QMainWindow):
             else:
                 self.selected_asset_keys.discard(asset.key)
         self._update_selection_info()
+        self._update_export_graphics_button()
+
+    def _update_export_graphics_button(self) -> None:
+        selected = any(
+            asset.key in self.selected_asset_keys for asset in self.assets
+        )
+        self.export_graphics_button.setEnabled(
+            selected
+            and not self.processing_busy
+            and not self.assets_loading
+            and self.input_path is not None
+            and not self._closing
+        )
 
     def _update_selection_info(self) -> None:
         selected = [
@@ -3282,6 +3767,7 @@ class MainWindow(QMainWindow):
         self.status_indicator.set_state("working")
         self.result_label.clear()
         self.result_label.setStyleSheet("")
+        self.open_button.setText("打开输出文件夹")
         self._set_busy(True)
 
         self.compression_thread = QThread(self)
@@ -3378,7 +3864,15 @@ class MainWindow(QMainWindow):
         self.result_label.setText("没有生成输出文件。")
 
     def cancel_compression(self) -> None:
-        if self.merge_worker and self.merge_thread and self.merge_thread.isRunning():
+        if (
+            self.graphics_export_worker
+            and self.graphics_export_thread
+            and self.graphics_export_thread.isRunning()
+        ):
+            self.graphics_export_worker.cancel()
+            self.cancel_button.setEnabled(False)
+            self.status_label.setText("正在安全取消高清图导出…")
+        elif self.merge_worker and self.merge_thread and self.merge_thread.isRunning():
             self.merge_worker.cancel()
             self.cancel_button.setEnabled(False)
             self.status_label.setText("正在安全取消合并…")
@@ -3391,6 +3885,7 @@ class MainWindow(QMainWindow):
         self.processing_busy = busy
         self.file_button.setEnabled(not busy)
         self.merge_button.setEnabled(not busy)
+        self._update_export_graphics_button()
         self.output_button.setEnabled(not busy)
         self.target_edit.setEnabled(not busy)
         self.unit_combo.setEnabled(not busy)
@@ -3408,7 +3903,8 @@ class MainWindow(QMainWindow):
         if not self.last_output:
             return
         try:
-            os.startfile(str(self.last_output.parent))  # type: ignore[attr-defined]
+            folder = self.last_output if self.last_output.is_dir() else self.last_output.parent
+            os.startfile(str(folder))  # type: ignore[attr-defined]
         except OSError as exc:
             self._show_error(f"无法打开输出文件夹：{exc}")
 
@@ -3428,6 +3924,8 @@ class MainWindow(QMainWindow):
             self.compression_worker.cancel()
         if self.merge_worker:
             self.merge_worker.cancel()
+        if self.graphics_export_worker:
+            self.graphics_export_worker.cancel()
         if any(thread.isRunning() for thread in self.findChildren(QThread)):
             self.setEnabled(False)
             self.status_label.setText("正在结束后台任务…")
@@ -3532,11 +4030,123 @@ def _workflow_self_test() -> int:
     return 0
 
 
+def _graphics_export_self_test() -> int:
+    """Exercise the staged graphics writer in source and frozen builds."""
+    import pymupdf as fitz
+    from PIL import Image
+    from io import BytesIO
+
+    with tempfile.TemporaryDirectory(prefix="pdf-graphics-self-test-") as directory:
+        workspace = Path(directory)
+        source = workspace / "graphics.pdf"
+        image_stream = BytesIO()
+        Image.new("RGB", (120, 80), (68, 119, 220)).save(image_stream, "PNG")
+        with fitz.open() as document:
+            page = document.new_page(width=320, height=240)
+            page.draw_rect(fitz.Rect(20, 20, 210, 150), color=(0, 0, 1), width=2)
+            page.insert_text((35, 55), "Vector export self-test")
+            page.insert_image(fitz.Rect(55, 75, 175, 135), stream=image_stream.getvalue())
+            page.insert_text((25, 175), "Figure 1. Self-test", fontsize=10)
+            document.save(source)
+        assets, _page_count = list_pdf_assets(source)
+        if not assets:
+            return 21
+        destination = workspace / "graphics-export"
+        results: list[GraphicsExportResult] = []
+        failures: list[str] = []
+        worker = GraphicsExportWorker(
+            source,
+            destination,
+            assets,
+            get_pdf_source_state(source),
+            frozenset({"svg", "png", "pdf"}),
+        )
+        worker.completed.connect(results.append)
+        worker.failed.connect(failures.append)
+        worker.cancelled.connect(lambda: failures.append("Unexpected cancellation"))
+        worker.run()
+        if failures or len(results) != 1:
+            return 22
+        manifest = destination / MANIFEST_NAME
+        svgs = list(destination.glob("*.svg"))
+        pdfs = list(destination.glob("*.pdf"))
+        if (
+            not manifest.is_file()
+            or len(svgs) != results[0].svg_count
+            or len(pdfs) != results[0].pdf_count
+            or results[0].formats != ("pdf", "png", "svg")
+        ):
+            return 23
+        if not any(b"<path" in path.read_bytes() for path in svgs):
+            return 24
+    return 0
+
+
+def _bootloader_splash_alive() -> bool:
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+
+        return bool(pyi_splash.is_alive())
+    except (ImportError, RuntimeError, ConnectionError, OSError):
+        return False
+
+
+def _update_bootloader_splash(message: str) -> None:
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+
+        if pyi_splash.is_alive():
+            pyi_splash.update_text(message)
+    except (ImportError, RuntimeError, ConnectionError, OSError):
+        pass
+
+
+def _close_bootloader_splash() -> None:
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+
+        if pyi_splash.is_alive():
+            pyi_splash.close()
+    except (ImportError, RuntimeError, ConnectionError, OSError):
+        pass
+
+
+def _startup_self_test() -> int:
+    """Verify both packaged early feedback and the Qt animation."""
+    bootloader_alive = _bootloader_splash_alive()
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setStyle("Fusion")
+    splash = AnimatedStartupSplash()
+    splash.show()
+    app.processEvents()
+    first = splash.grab().toImage()
+    splash.set_status("正在验证动态启动画面")
+    deadline = time.monotonic() + 0.18
+    while time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+    second = splash.grab().toImage()
+    animated = first != second and splash._phase > 0
+    _close_bootloader_splash()
+    splash.close()
+    splash.deleteLater()
+    app.processEvents()
+    if getattr(sys, "frozen", False) and not bootloader_alive:
+        return 31
+    return 0 if animated else 32
+
+
 def main() -> None:
+    if "--startup-self-test" in sys.argv:
+        raise SystemExit(_startup_self_test())
+    if any(argument.endswith("-self-test") for argument in sys.argv[1:]):
+        _close_bootloader_splash()
     if "--native-worker-self-test" in sys.argv:
         raise SystemExit(0 if find_native_worker() is not None else 8)
     if "--workflow-self-test" in sys.argv:
         raise SystemExit(_workflow_self_test())
+    if "--graphics-export-self-test" in sys.argv:
+        raise SystemExit(_graphics_export_self_test())
     if "--merge-ui-self-test" in sys.argv:
         from merge_ui import smoke_test
         raise SystemExit(smoke_test(PDFMergeDialog, MergeWorker, APP_STYLE))
@@ -3561,8 +4171,17 @@ def main() -> None:
     app.setWindowIcon(make_app_icon())
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLE)
+    startup_splash = AnimatedStartupSplash()
+    startup_splash.set_status("正在加载本地处理引擎")
+    startup_timer = QElapsedTimer()
+    startup_timer.start()
+    startup_splash.show()
+    app.processEvents()
+    _update_bootloader_splash("Opening the application interface...")
+    _close_bootloader_splash()
+
+    startup_splash.set_status("正在准备 PDF 工作区")
     window = MainWindow()
-    window.show()
     launch_pdf = next(
         (
             Path(argument)
@@ -3572,10 +4191,19 @@ def main() -> None:
         ),
         None,
     )
-    if launch_pdf is not None:
-        QTimer.singleShot(
-            0, lambda selected=launch_pdf: window._load_input(selected)
-        )
+
+    def reveal_window() -> None:
+        startup_splash.set_status("启动完成")
+        startup_splash.finish(window)
+        if launch_pdf is not None:
+            QTimer.singleShot(
+                0, lambda selected=launch_pdf: window._load_input(selected)
+            )
+
+    # Avoid a jarring one-frame flash on fast machines, without adding delay
+    # when initialization itself already took longer than the handoff window.
+    remaining = max(0, 900 - startup_timer.elapsed())
+    QTimer.singleShot(remaining, reveal_window)
     sys.exit(app.exec())
 
 

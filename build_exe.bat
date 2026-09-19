@@ -13,11 +13,9 @@ if errorlevel 1 goto :error
 call "native_worker\build.bat"
 if errorlevel 1 goto :error
 
-".venv\Scripts\pyinstaller.exe" --noconfirm --clean --onefile --windowed ^
-    --add-binary "native_worker\bin\pdf_fast_worker.exe;native_worker" ^
-    --add-binary "native_worker\bin\pdf_fast_worker_backend.exe;native_worker" ^
-    --add-binary "native_worker\bin\mupdfcpp64.dll;native_worker" ^
-    --name "PDF_Size_Reducer" qt_app.py
+rem The tracked spec owns the early bootloader splash and bundled native files.
+rem Building qt_app.py directly would silently drop the pre-Python splash.
+".venv\Scripts\pyinstaller.exe" --noconfirm --clean "PDF_Size_Reducer.spec"
 if errorlevel 1 goto :error
 
 if not exist "dist\PDF_Fast_Worker" mkdir "dist\PDF_Fast_Worker"

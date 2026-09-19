@@ -8,13 +8,13 @@
 
 # PDF Size Reducer
 
-**可视化 PDF 页面合成与最小损失定容压缩工具**
+**可视化 PDF 合成、高清图导出与最小损失定容压缩工具**
 
 当作业、申请、报销、投稿或在线表单限制 PDF 大小时，不必重新编辑 Word、PPT 或原始图片：选择文件、输入目标大小，再决定哪些图片需要缩减即可。
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-216%20passed-34C759?style=flat-square)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-237%20passed-34C759?style=flat-square)](#开发与测试)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -59,6 +59,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 | 高级组合，按需展开 | 合成树、嵌套分组、页码范围和更多按钮收进高级模式；两种模式共用方案和撤销历史，切换不丢内容。 |
 | 整份合并移入高级模式 | 在高级组合中打开整份文件队列，支持多选排序、文件名自然排序、撤销及页数/体积统计。 |
 | 合成后压缩 | 按树形方案复制原始 PDF 页面，不把文字变成图片；生成后可继续定容压缩。符合条件的整份文件方案继续使用原生加速合并。 |
+| 导出已选高清图 | 先在预览区勾选确实需要的 Figure/图片，再自由组合 SVG、600 DPI PNG、单图单页 PDF；未勾选图形不会导出。 |
 | 精确定容 | 输入 MB 或 KB，自动寻找不超过目标大小且尽可能清晰的结果，不靠填充无意义字节伪造体积。 |
 | 最小损失 | 首先尝试无损优化；只有达不到目标时才降低所选图片或 Figure 的数据量。 |
 | 完整 Figure 识别 | 根据 `Fig. X`、`Figure X` 或 `图 X` 图注，把位图、矢量线条、箭头和文字组成的论文插图视为一个项目。 |
@@ -67,6 +68,7 @@ PDF Size Reducer 尽量把这些工作自动化：识别 PDF 中的完整 Figure
 | 黑底风险可规避 | 大多数透明 Figure 会转为白底 RGB；如复杂 PPT 矢量图仍出现黑底，可取消勾选该图并保持原样。 |
 | 商业级桌面界面 | 玻璃感顶栏、结构化流程卡、动态状态灯、渐变主操作、缩略图淡入、悬停光影、惯性平滑滚动和高 DPI 适配。 |
 | 始终可响应 | 扫描、缩略图、高清预览、合并和压缩均在独立进程执行。关闭预览会取消渲染；压缩或合并取消后若后台仍无响应，会在宽限期结束后停止该任务的进程树。 |
+| 启动立即有动态反馈 | Windows 单文件解包阶段先显示实时加载状态，随后无缝切换为脉冲光环、旋转进度和移动光带动画，直到主工作区可以操作。 |
 | C++ 高速规划器 | C++17/MuPDF worker 从一次母版光栅化生成每张 Figure 的完整质量阶梯，再由全局预算规划器选择最清晰的组合。 |
 | 加固的原生边界 | Rust 守卫以内存安全的方式解析请求，核验原生后端和 DLL，将任务限制在私有工作区，并施加 Windows 进程与内存限制。 |
 
@@ -101,6 +103,15 @@ py -3 -m venv .venv
 原 PDF 始终保持不变。如果输出文件已存在，程序会先询问是否覆盖。
 
 如果源 PDF 在扫描后被其他程序保存或替换，请重新加载再进行压缩，避免旧的图形选择对应到新内容。桌面任务先在临时工作区生成结果，主程序确认成功且未取消后才保存到最终位置；取消或后台崩溃时，已有输出不会被半成品替换。
+
+### 导出已选高清图
+
+1. 加载 PDF，等待 Figure 识别完成，并在右侧准确勾选需要导出的 Figure/图片；全不选时导出按钮会禁用；
+2. 点击“导出已选高清图…”，通过格式勾选框选择 SVG、PNG、PDF 中的一种或多种格式；至少选择一种；
+3. 选择父文件夹。软件会自动新建 `<PDF 文件名>_高清图` 目录，已有同名目录不会被覆盖，并且只写出已勾选的格式；
+4. 需要核对来源时查看 `manifest.json`，其中列出用户选择的格式、每一项的原页码、尺寸、输出文件，以及内容是保留原生矢量还是无损嵌入原位图。
+
+完整 Figure 的 SVG/PDF 不会被整张拍平：原 PDF 路径继续保持矢量，SVG 文字输出为轮廓，PDF 文字保持原生；Figure PNG 最高按 600 DPI 渲染。Figure 内原本就是照片的部分继续保持原像素图层。独立位图无法在不描摹、不改变外观的前提下凭空变成真矢量，因此三种容器格式都会保留其原始像素，并如实标记为位图嵌入。最终导出项目数始终与右侧已勾选项目数一致，未勾选项目不会进入导出目录。
 
 ### 普通组合：直接拖动页面
 
@@ -153,9 +164,11 @@ v3.13.1 已修复 v3.13.0 拖动后松开不生效的问题。请运行更新后
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py merge_ui.py pdf_composer.py composer_ui.py qt_dispatch.py
+.\.venv\Scripts\python.exe -m py_compile compressor.py graphics_export.py qt_app.py merge_ui.py pdf_composer.py composer_ui.py qt_dispatch.py tools\generate_startup_splash.py
 # 需要通过 rustup 安装 stable Rust，并安装 Visual Studio 2022 C++ Build Tools。
 native_worker\build.bat
+.\.venv\Scripts\python.exe qt_app.py --graphics-export-self-test
+.\.venv\Scripts\python.exe qt_app.py --startup-self-test
 ```
 
 运行可重复的大文件界面压力测试：

@@ -8,13 +8,13 @@
 
 # PDF Size Reducer
 
-**Visual PDF page composition and loss-minimizing compression**
+**Visual PDF composition, high-resolution graphics export, and loss-minimizing compression**
 
 When an assignment portal, application form, expense system, or submission site limits PDF size, there is no need to reopen Word, PowerPoint, or every source image. Choose the PDF, enter the required size, and decide which images may be reduced.
 
 [![Release](https://img.shields.io/github/v/release/CBH2028/pdf-size-reducer?style=flat-square&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/CBH2028/pdf-size-reducer?style=flat-square&logo=github&label=Stars&color=5e5ce6)](https://github.com/CBH2028/pdf-size-reducer/stargazers)
-[![Tests](https://img.shields.io/badge/tests-216%20passed-34C759?style=flat-square)](#development-and-testing)
+[![Tests](https://img.shields.io/badge/tests-237%20passed-34C759?style=flat-square)](#development-and-testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://github.com/CBH2028/pdf-size-reducer/releases/latest)
 [![License](https://img.shields.io/github/license/CBH2028/pdf-size-reducer?style=flat-square)](LICENSE)
@@ -66,6 +66,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Advanced composition when needed | One toggle reveals the three-pane tree, nested groups, page ranges and extra controls. Both modes share the same plan and undo history; group names become bookmarks. |
 | Whole-document merge in Advanced | Open the optional file queue from Advanced composition to merge entire PDFs, reorder multiple files, sort naturally, undo and check totals. |
 | Compose and compress | Assemble selected original pages without rasterizing them, then optionally continue to the accelerated compression workspace. Compatible whole-document plans retain the guarded native merge path. |
+| Export selected graphics | Check exactly the Figure/image cards you need, then choose any combination of SVG, 600-DPI PNG and one-graphic-per-page PDF. Unchecked graphics are not exported. |
 | Exact size target | Enter MB or KB. The app searches for the clearest result at or below the target instead of padding a file with meaningless bytes. |
 | Loss-minimizing workflow | Lossless structural optimization is tried first. Image or Figure data is reduced only when lossless work cannot reach the target. |
 | Complete Figure discovery | Captions such as `Fig. X`, `Figure X`, and `图 X` are used to group bitmaps, vector paths, arrows, and labels into one selectable item. |
@@ -73,6 +74,7 @@ If this happens, **uncheck that Figure in the preview list and run the task agai
 | Clarity first | High resolution and moderate JPEG compression are preferred to protect small characters and thin lines. |
 | Safe exclusion | If a figure is too important or shows a black-background issue, uncheck it. Its original PDF content and clarity are retained. |
 | Responsive interface | Scanning, thumbnails, high-resolution previews, merging, and compression run in separate processes. Closing a preview cancels its render; stuck desktop writers can be stopped after a cancellation grace period. |
+| Immediate animated startup | The Windows bootloader shows activity during one-file extraction, then hands off to a pulsing, rotating Qt startup animation until the main workspace is interactive. |
 | Native high-speed planner | A C++17/MuPDF worker builds each Figure's complete quality ladder from one master rasterization; a global byte-budget planner then selects the clearest combination. |
 | Hardened native boundary | A Rust guard performs memory-safe request parsing, verifies the native backend and DLL, confines jobs to a private workspace, and applies Windows process and memory limits. |
 | Commercial-grade desktop UI | A glass-like header, structured workflow cards, animated status, a gradient primary action, progressive thumbnails, hover feedback, smooth scrolling, and high-DPI support. |
@@ -112,6 +114,15 @@ the PDF before compressing it. Source-state checks prevent ordinary file edits
 from silently applying old Figure selections to new content. Desktop tasks
 prepare output in temporary files; the application installs the final PDF only
 after successful completion and a final cancellation check.
+
+### Export selected graphics
+
+1. Load a PDF, wait for Figure discovery to finish, and check exactly the Figure/image cards you want. The export action is disabled when no card is selected.
+2. Click **Export selected high-resolution graphics…** (`导出已选高清图…`). Tick SVG, PNG, PDF, or any combination of the three, then choose a parent folder. At least one format is required.
+3. The app creates a new `<PDF name>_高清图` directory and never overwrites an existing export directory. Only the selected payload formats are written.
+4. Open the generated `manifest.json` when you need provenance. It lists requested formats, source pages, dimensions, output filenames and whether each item retains native vector content or embeds an original bitmap.
+
+Complete Figures are exported without flattening their PDF paths in SVG/PDF; SVG text is emitted as outlines and PDF text remains native. Figure PNGs render at up to 600 DPI. If a Figure mixes vector drawing with photographs, the vector portions remain vector in SVG/PDF and the original raster portions remain embedded. A standalone bitmap cannot be made into a truthful vector without tracing and altering it, so every selected container preserves its exact source pixels. The number of exported items always equals the number of checked cards; unchecked graphics remain out of the export directory.
 
 ### Compose pages by dragging
 
@@ -164,9 +175,11 @@ Text editing, automatic text-region editing and text insertion remain removed. P
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m py_compile compressor.py qt_app.py merge_ui.py pdf_composer.py composer_ui.py qt_dispatch.py
+.\.venv\Scripts\python.exe -m py_compile compressor.py graphics_export.py qt_app.py merge_ui.py pdf_composer.py composer_ui.py qt_dispatch.py tools\generate_startup_splash.py
 # Requires stable Rust (rustup) and Visual Studio 2022 C++ Build Tools.
 native_worker\build.bat
+.\.venv\Scripts\python.exe qt_app.py --graphics-export-self-test
+.\.venv\Scripts\python.exe qt_app.py --startup-self-test
 ```
 
 Run the reproducible large-file UI stress test:

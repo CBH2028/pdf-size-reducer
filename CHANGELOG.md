@@ -2,6 +2,23 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。日期采用 `YYYY-MM-DD` 格式。
 
+## 3.14.0 - 2026-09-18
+
+### Immediate animated startup feedback
+
+- Add a PyInstaller bootloader splash that appears during one-file extraction instead of leaving an unexplained blank interval. Its status text changes as bundled components are unpacked and it is centered on the active Windows monitor.
+- Hand off directly to a frameless Qt animation with a pulsing halo, rotating arc, moving light bar and changing initialization status. Keep it visible until the main window is constructed and interactive, then reveal the workspace without a second blank gap.
+- Keep spawned PDF workers and command-line self-tests from creating duplicate splash windows. Add deterministic splash-asset generation and `--startup-self-test` coverage for both the packaged early splash and live Qt animation. Make the standard build script use the tracked splash-enabled spec so later releases cannot silently lose early feedback.
+
+### High-resolution graphics export
+
+- Add checkbox-based format selection for every detected complete Figure and standalone PDF image. Users may choose SVG, PNG, PDF, or any combination; at least one format is required and only checked formats are written to a new, non-conflicting folder.
+- Bind the export input list to the preview-card selection instead of exporting the complete scan result. Selecting N Figure/image cards now exports exactly N items; selecting none disables the action and is rejected again at task startup.
+- Preserve native PDF paths in Figure SVG/PDF output and convert SVG text to vector outlines, so genuine vector plots remain sharp at any scale. Export Figure PNGs at up to 600 DPI. Mixed Figures retain their original vector and raster layers in SVG/PDF instead of flattening the entire Figure.
+- Be explicit about bitmap limits: raster objects are embedded losslessly at their original pixel dimensions inside selected SVG/PDF containers and are never described as genuinely vectorized or AI-traced. A UTF-8 `manifest.json` records requested formats, preservation mode, source pages, dimensions and output files for every item.
+- Run export in an isolated, cancellable process and stage the complete directory under parent ownership. Recheck the source before final installation, reject stale scans and directory collisions, and remove partial output after cancellation or failure. The source PDF is never modified.
+- Add source and packaged `--graphics-export-self-test` coverage plus regression tests for exact selected-item export, empty-selection rejection, checkbox selection, per-format exclusivity, PDF vector/text retention, SVG validity, retained paths/images, exact bitmap dimensions, privacy-safe manifests, stale sources, cancellation and atomic installation. All 237 Python tests pass; the packaged Windows executable passes all seven startup, native-worker, workflow, merge, advanced/simple composer and graphics-export checks.
+
 ## 3.13.1 - 2026-09-07
 
 ### Fix drag-and-drop event delivery

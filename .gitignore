@@ -7,6 +7,7 @@ native_worker/bin/
 native_worker/*.obj
 native_worker/guard/target/
 *.spec
+!PDF_Size_Reducer.spec
 test_*.pdf
 *.log
 .idea/
